@@ -2,3 +2,4 @@ streamlit
 flask
 requests 
 dotenv
+Pillow
