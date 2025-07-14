@@ -72,7 +72,7 @@ def get_all_clients():
     try:
         conn = sqlite3.connect("clients.db")
         c = conn.cursor()
-        c.execute("SELECT name, price_sheet_link FROM clients")
+        c.execute("SELECT name, price_sheet_link, customer_number FROM clients")
         clients = c.fetchall()
         conn.close()
         return clients
@@ -141,10 +141,12 @@ with tab1:
     )
     selected_file = None
     price_sheet_id = None
+    customer_number = None
     if selected_client:
         client_data = next((client for client in all_clients if client[0] == selected_client), None)
         if client_data:
             spreadsheet_link = client_data[1]
+            customer_number = client_data[2]
             file_id = extract_file_id_from_link(spreadsheet_link)
             price_sheet_id = file_id
             if file_id:
@@ -158,14 +160,14 @@ with tab1:
                 st.error("Invalid Google Spreadsheet link format")
     if not selected_file:
         selected_file = st.selectbox(
-            "Select File from Drive Folder",
+            "Select price sheet from Database",
             options=all_files if all_files else ["No files available"],
             index=0 if all_files else 0,
             placeholder="Type to search...",
             disabled=not all_files
         )
     uploaded_files = st.file_uploader(
-        "Upload multiple PDF or image files",
+        "Upload Delivery Note(s)",
         type=["pdf", "png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"],
         accept_multiple_files=True,
         help="You can select multiple files."
@@ -188,6 +190,8 @@ with tab1:
                             data["name"] = selected_client
                         if price_sheet_id:
                             data["price_sheet_id"] = price_sheet_id
+                        if customer_number:
+                            data["customer_number"] = customer_number
                         print("Payload being sent:", data)
                         try:
                             resp = requests.post(N8N_WEBHOOK_URL, data=data, files=files_payload)
@@ -202,9 +206,10 @@ with tab2:
     st.header("Add Client")
     client_name = st.text_input("Client Name", key="client_name")
     price_sheet_link = st.text_input("Google Spreadsheet Link", key="price_sheet_link")
+    customer_number = st.text_input("Customer Number", key="customer_number")
     if st.button("Add Client", key="add_client_btn"):
-        if not client_name or not price_sheet_link:
-            st.error("Both fields are required.")
+        if not client_name or not price_sheet_link or not customer_number:
+            st.error("All fields are required.")
         else:
             try:
                 conn = sqlite3.connect("clients.db")
@@ -213,10 +218,11 @@ with tab2:
                     CREATE TABLE IF NOT EXISTS clients (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         name TEXT NOT NULL,
-                        price_sheet_link TEXT NOT NULL
+                        price_sheet_link TEXT NOT NULL,
+                        customer_number TEXT NOT NULL
                     )
                 """)
-                c.execute("INSERT INTO clients (name, price_sheet_link) VALUES (?, ?)", (client_name, price_sheet_link))
+                c.execute("INSERT INTO clients (name, price_sheet_link, customer_number) VALUES (?, ?, ?)", (client_name, price_sheet_link, customer_number))
                 conn.commit()
                 conn.close()
                 st.success("Client added successfully!")
