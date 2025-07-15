@@ -134,15 +134,15 @@ with tab1:
     all_clients = get_all_clients()
     client_names = [client[0] for client in all_clients]
     selected_client = st.selectbox(
-        "Select Client (Optional)",
-        options=[""] + client_names,
+        "Select Client Name",
+        options=["(Select client name)"] + client_names,
         index=0,
         help="Select a client to automatically use their price sheet"
     )
     selected_file = None
     price_sheet_id = None
     customer_number = None
-    if selected_client:
+    if selected_client and selected_client != "(Select client name)":
         client_data = next((client for client in all_clients if client[0] == selected_client), None)
         if client_data:
             spreadsheet_link = client_data[1]
@@ -153,19 +153,13 @@ with tab1:
                 spreadsheet_name = get_file_name_from_drive(file_id)
                 if spreadsheet_name:
                     selected_file = spreadsheet_name
-                    st.success(f"Using price sheet: {spreadsheet_name}")
+                    st.info(f"Price sheet for {selected_client}: {spreadsheet_name}")
                 else:
                     st.error("Could not fetch spreadsheet name from Google Drive")
             else:
                 st.error("Invalid Google Spreadsheet link format")
-    if not selected_file:
-        selected_file = st.selectbox(
-            "Select price sheet from Database",
-            options=all_files if all_files else ["No files available"],
-            index=0 if all_files else 0,
-            placeholder="Type to search...",
-            disabled=not all_files
-        )
+    # Remove the price sheet selectbox entirely
+    # selected_file is only set if a client is selected and spreadsheet is found
     uploaded_files = st.file_uploader(
         "Upload Delivery Note(s)",
         type=["pdf", "png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"],
@@ -173,8 +167,8 @@ with tab1:
         help="You can select multiple files."
     )
     if st.button("Submit", use_container_width=True, type="primary"):
-        if not selected_file or selected_file == "No files available":
-            st.error("Please select a valid file from your Drive folder.")
+        if not selected_client or selected_client == "(Select client name)":
+            st.error("Please select a valid client.")
         elif not uploaded_files:
             st.error("Please upload at least one file.")
         else:
