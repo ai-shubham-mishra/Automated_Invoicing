@@ -13,28 +13,10 @@ load_dotenv()
 st.set_page_config(page_title="Client File Uploader", page_icon="📤", layout="centered")
 
 GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-GOOGLE_FOLDER_ID = os.getenv('GOOGLE_FOLDER_ID')
+# GOOGLE_FOLDER_ID removed
 N8N_WEBHOOK_URL = os.getenv('N8N_WEBHOOK_URL')
 
-# Fetch files from Google Drive
-def fetch_drive_files():
-    if not GOOGLE_API_KEY or not GOOGLE_FOLDER_ID:
-        st.error("Google API key or Folder ID is missing. Please check your environment variables.")
-        return []
-    url = f"https://www.googleapis.com/drive/v3/files?q='{GOOGLE_FOLDER_ID}'+in+parents+and+trashed=false&fields=files(id,name)&key={GOOGLE_API_KEY}"
-    try:
-        res = requests.get(url)
-        if res.status_code != 200:
-            st.error(f"Google Drive API error: {res.json().get('error', {}).get('message', 'Unknown error')}")
-            return []
-        files = res.json().get('files', [])
-        if not files:
-            st.warning("No files found in the specified Google Drive folder.")
-            return []
-        return [f['name'] for f in files]
-    except Exception as e:
-        st.error(f"Failed to fetch files from Google Drive: {e}")
-        return []
+# fetch_drive_files function removed
 
 # Extract file ID from Google Spreadsheet link
 def extract_file_id_from_link(link):
@@ -130,7 +112,7 @@ TABS = ["Generate Invoice", "Add Client", "Remove Client"]
 tab1, tab2, tab3 = st.tabs(TABS)
 
 with tab1:
-    all_files = fetch_drive_files()
+    # all_files = fetch_drive_files()  # Removed, not needed
     all_clients = get_all_clients()
     client_names = [client[0] for client in all_clients]
     selected_client = st.selectbox(

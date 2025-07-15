@@ -1,46 +1,75 @@
-# Automated Invoicing UI
+# Client Invoicing UI
 
-## Abstract
-This project is a Streamlit-based web application that allows users to upload PDF or image files and select files from a Google Drive folder. The uploaded files, along with user information, are sent to an n8n webhook for further processing. The app is designed to streamline the process of submitting client files for automated invoicing workflows.
+This is a Streamlit-based web application for managing client price sheets, uploading delivery notes, and generating invoices. The app is fully database-driven and does not require Google Drive folder access.
 
-## Getting Started
+## Features
+- **Generate Invoice:** Select a client, view their price sheet, upload delivery notes, and submit for invoice generation.
+- **Add Client:** Add new clients with their price sheet (Google Spreadsheet link) and customer number.
+- **Remove Client:** Remove clients and their associated price sheet records from the database.
+
+## Setup Instructions
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/ai-shubham-mishra/Automated_Invoicing.git
-cd Automated_Invoicing/Invoicing_UI
+https://github.com/yourusername/Invoicing_UI.git
+cd Invoicing_UI
 ```
 
-### 2. Create a `.env` File
-Create a `.env` file in the root of the `Invoicing_UI` directory with the following variables:
-
-```
-GOOGLE_API_KEY=your_google_api_key_here
-GOOGLE_FOLDER_ID=your_google_drive_folder_id_here
-N8N_WEBHOOK_URL=your_n8n_webhook_url_here
-```
-
-- **GOOGLE_API_KEY**: Your Google API key with access to Google Drive API.
-- **GOOGLE_FOLDER_ID**: The ID of the Google Drive folder containing files to display in the app.
-- **N8N_WEBHOOK_URL**: The URL of your n8n webhook endpoint to receive uploaded files and user data.
-
-### 3. Install Dependencies
-It is recommended to use a virtual environment (e.g., `venv` or `conda`). Then install dependencies:
-
+### 2. Install Dependencies
+It is recommended to use a virtual environment:
 ```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 4. Run the Application
-Start the Streamlit app with:
+### 3. Environment Variables
+Create a `.env` file in the project root with the following variables:
 
+```
+GOOGLE_API_KEY=your_google_api_key  # Only needed for fetching spreadsheet names
+N8N_WEBHOOK_URL=your_n8n_webhook_url
+```
+
+- `GOOGLE_API_KEY`: Used to fetch the spreadsheet name from a Google Spreadsheet link. Required for correct display of price sheet names.
+- `N8N_WEBHOOK_URL`: The endpoint where invoice data and uploaded files are sent for processing.
+
+### 4. Database Setup
+The app uses a local SQLite database (`clients.db`). The database and required tables are created automatically when you add your first client.
+
+## Usage
+Run the app with:
 ```bash
 streamlit run app.py
 ```
 
-The app will open in your default web browser. Follow the on-screen instructions to upload files and submit data.
+### Tabs Overview
 
-## Requirements
-- Python 3.8+
-- Google API key with Drive API enabled
-- n8n workflow with a webhook endpoint
+#### 1. Generate Invoice
+- **Select Client Name:** Choose a client from the dropdown.
+- **Price Sheet Display:** After selecting a client, their price sheet name (from the Google Spreadsheet link) is shown.
+- **Upload Delivery Notes:** Upload one or more delivery note files (PDF, images).
+- **Submit:** Sends the data to the configured webhook for invoice generation.
+
+#### 2. Add Client
+- Enter the client name, Google Spreadsheet link (for their price sheet), and customer number.
+- Click "Add Client" to save the client to the database.
+
+#### 3. Remove Client
+- Select a client to delete.
+- Type `CONFIRM` to confirm deletion.
+- Click "Delete Client" to remove the client and their price sheet record.
+
+## Notes
+- The app is now fully database-driven for price sheets. No Google Drive folder access or folder ID is required.
+- Make sure your `.env` file is set up correctly before running the app.
+- Uploaded files and invoice data are sent to the webhook specified by `N8N_WEBHOOK_URL`.
+
+## Troubleshooting
+- If you see errors about missing environment variables, check your `.env` file.
+- If you have issues with Google Spreadsheet links, ensure your `GOOGLE_API_KEY` is valid and the spreadsheet is accessible.
+- For database errors, ensure you have write permissions in the project directory.
+
+---
+
+For further questions or issues, please open an issue in this repository.
