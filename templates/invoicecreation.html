@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% import '_components.html' as ui %}
+{% block content %}
+  <h1>{{ t('invoice_title') }}</h1>
+  <form method="post" action="{{ url_for('invoicecreation_post') }}" enctype="multipart/form-data">
+    {% call ui.card() %}
+      {% call ui.field(t('dropdown_label'), 'client_name') %}
+        <select id="client_name" name="client_name" required>
+          <option value="" disabled selected>{{ t('select_placeholder') }}</option>
+          {% for c in clients %}
+            <option value="{{ c }}">{{ c }}</option>
+          {% endfor %}
+        </select>
+      {% endcall %}
+      {% call ui.field(t('delivery_label'), 'delivery_notes') %}
+        <input type="file" id="delivery_notes" name="delivery_notes" accept=".pdf" multiple>
+      {% endcall %}
+      {{ ui.button(t('generate_button')) }}
+    {% endcall %}
+  </form>
+{% endblock %}
+
+

@@ -1,0 +1,21 @@
+{% macro card(title=None, body_class='') -%}
+  <div class="card {{ body_class }}">
+    {% if title %}<div class="card-title">{{ title }}</div>{% endif %}
+    <div class="card-body">
+      {{ caller() }}
+    </div>
+  </div>
+{%- endmacro %}
+
+{% macro field(label, for_id=None) -%}
+  <div class="field">
+    {% if label %}<label {% if for_id %}for="{{ for_id }}"{% endif %}>{{ label }}</label>{% endif %}
+    {{ caller() }}
+  </div>
+{%- endmacro %}
+
+{% macro button(text, kind='primary', attrs='') -%}
+  <button class="btn btn-{{ kind }}" {{ attrs|safe }}>{{ text }}</button>
+{%- endmacro %}
+
+

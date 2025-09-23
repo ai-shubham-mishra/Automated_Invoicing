@@ -1,3 +1,8 @@
+Flask==3.0.3
+pandas==2.2.2
+openpyxl==3.1.5
+requests==2.32.3
+
 streamlit
 flask
 requests 

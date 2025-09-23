@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% import '_components.html' as ui %}
+{% block content %}
+  <h1>{{ t('feed_title') }}</h1>
+  <form method="post" action="{{ url_for('feeddata_post') }}" enctype="multipart/form-data">
+    {% call ui.card() %}
+      {% call ui.field(t('excel_label'), 'file') %}
+        <input type="file" id="file" name="file" accept=".xlsx,.xlsm,.xls" required>
+      {% endcall %}
+      <p class="hint">{{ t('overwrite_hint') }}</p>
+      {{ ui.button(t('import_button')) }}
+    {% endcall %}
+  </form>
+{% endblock %}
+
+
