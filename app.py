@@ -248,7 +248,7 @@ def fetch_rows_for_kunde(conn: sqlite3.Connection, kunde_name: str) -> list[dict
 # ----------------------------
 TRANSLATIONS = {
     "en": {
-        "brand": "Price Lists",
+        "brand": "Generate Invoice",
         "nav_feeddata": "Feed data",
         "nav_invoicecreation": "Invoice creation",
         "feed_title": "Upload price sheet",
@@ -277,7 +277,7 @@ TRANSLATIONS = {
         "flash_webhook_send_error": "Error sending to webhook: {error}",
     },
     "de": {
-        "brand": "Preislisten",
+        "brand": "Rechnung erstellen",
         "nav_feeddata": "Einspeisen",
         "nav_invoicecreation": "Rechnungserstellung",
         "feed_title": "Preisliste hochladen",

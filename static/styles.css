@@ -95,4 +95,29 @@ input[type="text"], input[type="date"], select, input[type="file"] {
   .field-grid { grid-template-columns: 1fr; }
 }
 
+/* Responsive enhancements for tablet and mobile */
+@media (max-width: 920px) {
+  .container { padding: 16px; }
+}
+
+@media (max-width: 720px) {
+  .appbar-inner { flex-wrap: wrap; gap: 10px; }
+  .brand { font-size: 16px; }
+  .tabs { order: 3; width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 6px; }
+  .tab { white-space: nowrap; flex: 0 0 auto; padding: 8px 10px; }
+  .lang-switch { order: 2; }
+  .page { padding-top: 12px; }
+  .card { padding: 16px; }
+  input[type="text"], input[type="date"], select, input[type="file"] { font-size: 16px; }
+  .btn { width: 100%; }
+  h1 { font-size: 18px; }
+  .combo-list { max-height: 50vh; }
+}
+
+@media (max-width: 480px) {
+  .container { padding: 12px; }
+  .tabs { gap: 6px; }
+  .btn { padding: 12px; }
+}
+
 
