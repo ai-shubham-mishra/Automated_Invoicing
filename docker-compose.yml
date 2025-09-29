@@ -1,0 +1,25 @@
+services:
+  invoicing-UI:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/ai-shubham-mishra/automatedinvoicingplatform:latest
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - GUNICORN_TIMEOUT=300
+      - GUNICORN_WORKERS=1 
+    env_file:
+      - /opt/config/invoicing.env
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;\ntry:\n r=urllib.request.urlopen('http://127.0.0.1:8300/health', timeout=2);\n sys.exit(0 if r.status==200 else 1)\nexcept Exception:\n sys.exit(1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

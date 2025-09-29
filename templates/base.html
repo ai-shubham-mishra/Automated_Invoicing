@@ -7,24 +7,22 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   </head>
   <body>
-    <nav class="navbar">
-      <div class="container nav-flex">
-        <div>
-          <a href="{{ url_for('feeddata_get') }}" class="brand">{{ t('brand') }}</a>
-          <span class="slash-links">
-            <a href="{{ url_for('feeddata_get') }}">/feeddata</a>
-            <a href="{{ url_for('invoicecreation_get') }}">/invoicecreation</a>
-          </span>
-        </div>
+    <header class="appbar">
+      <div class="container appbar-inner">
+        <a href="{{ url_for('feeddata_get') }}" class="brand">{{ t('brand') }}</a>
+        <nav class="tabs">
+          <a href="{{ url_for('feeddata_get') }}" class="tab {{ 'active' if request.path == url_for('feeddata_get') else '' }}">{{ t('feed_title') }}</a>
+          <a href="{{ url_for('invoicecreation_get') }}" class="tab {{ 'active' if request.path == url_for('invoicecreation_get') else '' }}">{{ t('invoice_title') }}</a>
+        </nav>
         <div class="lang-switch">
           <a href="{{ url_for('set_lang', lang='en') }}" class="{{ 'active' if lang == 'en' else '' }}">EN</a>
           <span>/</span>
           <a href="{{ url_for('set_lang', lang='de') }}" class="{{ 'active' if lang == 'de' else '' }}">DE</a>
         </div>
       </div>
-    </nav>
+    </header>
 
-    <main class="container">
+    <main class="container page">
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
           <div class="flashes">
