@@ -18,7 +18,17 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "tmp", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Dedicated Preise database (exact headers, single table, full overwrite)
-PRICING_DB_PATH = os.path.join(BASE_DIR, "pricing_sheet.db")
+# Resolve DB location from environment for deployment persistence; fallback for local dev
+PRICING_DB_PATH = os.getenv("PRICING_DB_PATH")
+if not PRICING_DB_PATH:
+    configured_db_dir = os.getenv("PRICING_DB_DIR")
+    if configured_db_dir:
+        PRICING_DB_PATH = os.path.join(configured_db_dir, "pricing_sheet.db")
+    else:
+        PRICING_DB_PATH = os.path.join(BASE_DIR, "pricing_sheet.db")
+
+# Ensure the target directory for the SQLite file exists
+os.makedirs(os.path.dirname(PRICING_DB_PATH), exist_ok=True)
 
 # Set your n8n webhook URL here directly
 WEBHOOK_URL = os.getenv("INVOICE_WEBHOOK_URL")  # e.g., "http://localhost:5678/webhook/your-path"
