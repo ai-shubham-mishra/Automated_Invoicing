@@ -57,9 +57,9 @@ jobs:
             set -euo pipefail
             cd /opt/invoice
             echo "$TOKEN_GITHUB" | docker login ghcr.io -u ai-shubham-mishra --password-stdin
-            docker compose down || true
-            docker compose pull
-            docker compose up -d
+            docker-compose down || true
+            docker-compose pull
+            docker-compose up -d
             docker image prune -f
             echo "Deployment completed successfully!"
           EOF
