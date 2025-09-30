@@ -21,7 +21,7 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "tmp", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Invoices archive dir (persistent) and one-time download temp dir
-INVOICES_DIR = os.getenv("INVOICES_DIR") or "/opt/api_invoices"
+INVOICES_DIR = os.getenv("INVOICES_DIR") or "/opt/generated_invoices"
 DOWNLOAD_TMP_DIR = os.path.join(BASE_DIR, "tmp", "downloads")
 os.makedirs(INVOICES_DIR, exist_ok=True)
 os.makedirs(DOWNLOAD_TMP_DIR, exist_ok=True)

@@ -47,7 +47,7 @@ h1 { margin: 16px 0 8px; font-size: 22px; }
 .field { display: flex; flex-direction: column; margin-bottom: 14px; }
 .field-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 label { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
-input[type="text"], input[type="date"], select, input[type="file"] {
+input[type="text"], input[type="password"], input[type="date"], select, input[type="file"] {
   background: #262a39;
   border: 1px solid var(--border);
   border-radius: 6px;
