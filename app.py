@@ -45,6 +45,16 @@ os.makedirs(os.path.dirname(PRICING_DB_PATH), exist_ok=True)
 
 # Set your n8n webhook URL here directly
 WEBHOOK_URL = os.getenv("INVOICE_WEBHOOK_URL")  # e.g., "http://localhost:5678/webhook/your-path"
+# Read timeout minutes for webhook response (default 5 minutes)
+try:
+    _timeout_min_raw = os.getenv("INVOICE_WEBHOOK_TIMEOUT_MIN")
+    WEBHOOK_TIMEOUT_MIN = int(_timeout_min_raw) if _timeout_min_raw else 5
+except Exception:
+    WEBHOOK_TIMEOUT_MIN = 5
+if WEBHOOK_TIMEOUT_MIN <= 0:
+    WEBHOOK_TIMEOUT_MIN = 5
+WEBHOOK_CONNECT_TIMEOUT_SEC = 30
+WEBHOOK_READ_TIMEOUT_SEC = WEBHOOK_TIMEOUT_MIN * 60
 
 ALLOWED_EXCEL_EXTENSIONS = {".xlsx", ".xlsm"}
 ALLOWED_PDF_EXTENSIONS = {".pdf"}
@@ -626,7 +636,12 @@ def api_generate_invoice():
 
     try:
         # Separate connect/read timeouts to allow longer processing on n8n
-        resp = requests.post(WEBHOOK_URL, data=data_fields, files=file_parts, timeout=(30, 300))
+        resp = requests.post(
+            WEBHOOK_URL,
+            data=data_fields,
+            files=file_parts,
+            timeout=(WEBHOOK_CONNECT_TIMEOUT_SEC, WEBHOOK_READ_TIMEOUT_SEC),
+        )
         ok = 200 <= resp.status_code < 300
         if not ok:
             return jsonify({"error": tr("flash_webhook_fail", status=resp.status_code)}), 502

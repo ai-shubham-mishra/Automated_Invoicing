@@ -10,6 +10,7 @@ services:
     environment:
       - GUNICORN_TIMEOUT=300
       - GUNICORN_WORKERS=1 
+      - INVOICE_WEBHOOK_TIMEOUT_MIN=5
     env_file:
       - /opt/config/invoicing.env
     volumes:
