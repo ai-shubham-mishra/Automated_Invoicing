@@ -21,9 +21,9 @@
           <a href="{{ url_for('set_lang', lang='de') }}" class="{{ 'active' if lang == 'de' else '' }}">DE</a>
         </div>
         {% if is_authed %}
-          <a href="{{ url_for('logout') }}" class="tab">Logout</a>
+          <a href="{{ url_for('logout') }}" class="tab">{{ t('logout') }}</a>
         {% else %}
-          <a href="{{ url_for('login_get') }}" class="tab">Login</a>
+          <a href="{{ url_for('login_get') }}" class="tab">{{ t('login') }}</a>
         {% endif %}
       </div>
     </header>

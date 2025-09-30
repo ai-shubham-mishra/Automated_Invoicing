@@ -310,6 +310,13 @@ TRANSLATIONS = {
         "sort_newest": "Newest",
         "sort_oldest": "Oldest",
         "no_invoices": "No invoices yet.",
+        "login": "Login",
+        "logout": "Logout",
+        "login_title": "Login",
+        "username": "Username",
+        "password": "Password",
+        "login_button": "Login",
+        "invalid_credentials": "Invalid credentials",
     },
     "de": {
         "brand": "Rechnung erstellen",
@@ -351,6 +358,13 @@ TRANSLATIONS = {
         "sort_newest": "Neueste",
         "sort_oldest": "Älteste",
         "no_invoices": "Noch keine Rechnungen.",
+        "login": "Anmelden",
+        "logout": "Abmelden",
+        "login_title": "Anmeldung",
+        "username": "Benutzername",
+        "password": "Passwort",
+        "login_button": "Anmelden",
+        "invalid_credentials": "Ungültige Zugangsdaten",
     },
 }
 
@@ -411,7 +425,7 @@ def login_post():
         session["auth"] = True
         dest = request.args.get("next") or url_for("invoicecreation_get")
         return redirect(dest)
-    flash("Invalid credentials", "error")
+    flash(tr("invalid_credentials"), "error")
     return redirect(url_for("login_get"))
 
 
