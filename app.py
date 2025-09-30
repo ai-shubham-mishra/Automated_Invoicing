@@ -2,8 +2,11 @@ import os
 import json
 import sqlite3
 from datetime import datetime
+import uuid
+from typing import Any
+from functools import wraps
 
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file, after_this_request
 from werkzeug.utils import secure_filename
 
 import pandas as pd
@@ -16,6 +19,16 @@ import requests
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "tmp", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# Invoices archive dir (persistent) and one-time download temp dir
+INVOICES_DIR = os.getenv("INVOICES_DIR") or "/opt/api_invoices"
+DOWNLOAD_TMP_DIR = os.path.join(BASE_DIR, "tmp", "downloads")
+os.makedirs(INVOICES_DIR, exist_ok=True)
+os.makedirs(DOWNLOAD_TMP_DIR, exist_ok=True)
+
+# Simple auth configuration
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME") or "admin"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD") or "123456"
 
 # Dedicated Preise database (exact headers, single table, full overwrite)
 # Resolve DB location from environment for deployment persistence; fallback for local dev
@@ -275,6 +288,18 @@ TRANSLATIONS = {
         "flash_webhook_ok": "Webhook request sent successfully.",
         "flash_webhook_fail": "Webhook error: {status}",
         "flash_webhook_send_error": "Error sending to webhook: {error}",
+        "invoice_name": "Invoice name",
+        "invoices": "Invoices",
+        "please_wait": "Please wait...",
+        "preview": "Preview",
+        "download": "Download",
+        "rename": "Rename",
+        "filters": "Filters",
+        "from": "From",
+        "to": "To",
+        "sort_newest": "Newest",
+        "sort_oldest": "Oldest",
+        "no_invoices": "No invoices yet.",
     },
     "de": {
         "brand": "Rechnung erstellen",
@@ -304,6 +329,18 @@ TRANSLATIONS = {
         "flash_webhook_ok": "Webhook-Anfrage erfolgreich gesendet.",
         "flash_webhook_fail": "Webhook Fehler: {status}",
         "flash_webhook_send_error": "Fehler beim Senden an Webhook: {error}",
+        "invoice_name": "Rechnungsname",
+        "invoices": "Rechnungen",
+        "please_wait": "Bitte warten...",
+        "preview": "Vorschau",
+        "download": "Herunterladen",
+        "rename": "Umbenennen",
+        "filters": "Filter",
+        "from": "Von",
+        "to": "Bis",
+        "sort_newest": "Neueste",
+        "sort_oldest": "Älteste",
+        "no_invoices": "Noch keine Rechnungen.",
     },
 }
 
@@ -324,7 +361,7 @@ def tr(key: str, **kwargs) -> str:
 
 @app.context_processor
 def inject_i18n():
-    return {"t": tr, "lang": get_lang()}
+    return {"t": tr, "lang": get_lang(), "is_authed": bool(session.get("auth"))}
 
 
 @app.get("/set-lang")
@@ -340,17 +377,51 @@ def set_lang():
 # ----------------------------
 # Routes
 # ----------------------------
+
+def login_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("auth"):
+            nxt = request.path
+            return redirect(url_for("login_get", next=nxt))
+        return view(*args, **kwargs)
+    return wrapped
+
+
+@app.get("/login")
+def login_get():
+    return render_template("login.html", next=request.args.get("next", ""))
+
+
+@app.post("/login")
+def login_post():
+    username = (request.form.get("username") or "").strip()
+    password = (request.form.get("password") or "").strip()
+    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        session["auth"] = True
+        dest = request.args.get("next") or url_for("invoicecreation_get")
+        return redirect(dest)
+    flash("Invalid credentials", "error")
+    return redirect(url_for("login_get"))
+
+
+@app.get("/logout")
+def logout():
+    session.pop("auth", None)
+    return redirect(url_for("login_get"))
 @app.route("/")
 def index():
     return redirect(url_for("feeddata_get"))
 
 
 @app.get("/feeddata")
+@login_required
 def feeddata_get():
     return render_template("feeddata.html")
 
 
 @app.post("/feeddata")
+@login_required
 def feeddata_post():
     if "file" not in request.files:
         flash(tr("flash_missing_file"), "error")
@@ -409,6 +480,7 @@ def feeddata_post():
 
 
 @app.get("/invoicecreation")
+@login_required
 def invoicecreation_get():
     q = (request.args.get("q") or "").strip()
     try:
@@ -435,12 +507,69 @@ def build_pricing_json_for_client(client_name: str) -> list[dict]:
         pconn.close()
 
 
-@app.post("/invoicecreation")
-def invoicecreation_post():
+def _load_invoices_meta() -> dict[str, Any]:
+    meta_path = os.path.join(INVOICES_DIR, "invoices_meta.json")
+    if not os.path.exists(meta_path):
+        return {"items": []}
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {"items": []}
+
+
+def _save_invoices_meta(meta: dict[str, Any]) -> None:
+    meta_path = os.path.join(INVOICES_DIR, "invoices_meta.json")
+    tmp_path = meta_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, meta_path)
+
+
+def _add_invoice_record(name: str, client_name: str, rel_pdf_path: str, size_bytes: int) -> dict[str, Any]:
+    meta = _load_invoices_meta()
+    record = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "client": client_name,
+        "file": rel_pdf_path,  # relative to INVOICES_DIR
+        "size": size_bytes,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    meta.setdefault("items", []).insert(0, record)
+    _save_invoices_meta(meta)
+    return record
+
+
+def _find_invoice_record(rec_id: str) -> dict[str, Any] | None:
+    meta = _load_invoices_meta()
+    for it in meta.get("items", []):
+        if it.get("id") == rec_id:
+            return it
+    return None
+
+
+def _update_invoice_name(rec_id: str, new_name: str) -> bool:
+    meta = _load_invoices_meta()
+    changed = False
+    for it in meta.get("items", []):
+        if it.get("id") == rec_id:
+            it["name"] = new_name
+            changed = True
+            break
+    if changed:
+        _save_invoices_meta(meta)
+    return changed
+
+
+@app.post("/api/generate_invoice")
+@login_required
+def api_generate_invoice():
     client_name = (request.form.get("client_name") or "").strip()
+    invoice_name = (request.form.get("invoice_name") or "").strip()
     if not client_name:
         flash("Bitte einen Kunden auswählen.", "error")
-        return redirect(url_for("invoicecreation_get"))
+        return jsonify({"error": "client_name required"}), 400
 
     delivery_notes = request.files.getlist("delivery_notes")
     valid_pdfs = []
@@ -450,43 +579,233 @@ def invoicecreation_post():
         valid_pdfs.append(f)
 
     if not WEBHOOK_URL:
-        flash(tr("webhook_not_set"), "error")
-        return redirect(url_for("invoicecreation_get"))
+        return jsonify({"error": tr("webhook_not_set")}), 400
 
     # Build exact-key array from Preise table filtered by Kunde_Name
     try:
         pconn = get_pricing_db()
         if not pricing_table_exists(pconn):
             pconn.close()
-            flash("Keine Preise-Daten vorhanden.", "error")
-            return redirect(url_for("invoicecreation_get"))
+            return jsonify({"error": "no pricing data"}), 400
         rows = fetch_rows_for_kunde(pconn, client_name)
         pconn.close()
     except Exception as e:
-        flash(str(e), "error")
-        return redirect(url_for("invoicecreation_get"))
+        return jsonify({"error": str(e)}), 500
 
-    # Build multipart form-data: JSON schema as string field, PDFs as files
-    files = []
-    # Send only the array as JSON string; no wrapper keys
-    form_data = {
-        "schema": json.dumps(rows, ensure_ascii=False)
-    }
-    for pdf in valid_pdfs:
-        safe_name = secure_filename(pdf.filename or "delivery_note.pdf")
-        files.append(("delivery_notes", (safe_name, pdf.stream, "application/pdf")))
+    # Build multipart form-data to emit N items under the same field name `data`
+    # and N matching binary parts under `binary[<index>]`, plus a single `schema` field.
+    data_fields: list[tuple[str, str]] = []
+    file_parts: list[tuple[str, tuple[str, Any, str]]] = []
+
+    # Attach the pricing rows once as a standalone schema field
+    data_fields.append(("schema", json.dumps(rows, ensure_ascii=False)))
+
+    if valid_pdfs:
+        for idx, pdf in enumerate(valid_pdfs):
+            safe_name = secure_filename(pdf.filename or "delivery_note.pdf")
+            # Per-item JSON under repeated field name pattern data[<index>]
+            item_payload = {
+                "kunde": client_name,
+                "filename": safe_name,
+                "index": idx,
+            }
+            data_fields.append((f"data[{idx}]", json.dumps(item_payload, ensure_ascii=False)))
+            # Matching binary part under binary[<index>]
+            file_parts.append((f"binary[{idx}]", (safe_name, pdf.stream, "application/pdf")))
+        # Optional: include count to aid parsing on receiver side
+        data_fields.append(("count", str(len(valid_pdfs))))
+    else:
+        # No PDFs: send a single logical item with schema only
+        item_payload = {
+            "kunde": client_name,
+            "filename": None,
+            "index": 0,
+        }
+        data_fields.append(("data[0]", json.dumps(item_payload, ensure_ascii=False)))
+        data_fields.append(("count", "1"))
 
     try:
-        resp = requests.post(WEBHOOK_URL, data=form_data, files=files, timeout=60)
+        # Separate connect/read timeouts to allow longer processing on n8n
+        resp = requests.post(WEBHOOK_URL, data=data_fields, files=file_parts, timeout=(30, 300))
         ok = 200 <= resp.status_code < 300
-        if ok:
-            flash(tr("flash_webhook_ok"), "success")
-        else:
-            flash(tr("flash_webhook_fail", status=resp.status_code), "error")
-    except Exception as e:
-        flash(tr("flash_webhook_send_error", error=str(e)), "error")
+        if not ok:
+            return jsonify({"error": tr("flash_webhook_fail", status=resp.status_code)}), 502
 
-    return redirect(url_for("invoicecreation_get"))
+        # Determine filename from response headers or fallback
+        disp = resp.headers.get("Content-Disposition", "")
+        fallback_name = "invoice.pdf"
+        if "filename=" in disp:
+            try:
+                fallback_name = disp.split("filename=")[1].strip('"') or fallback_name
+            except Exception:
+                pass
+        final_name = invoice_name or fallback_name
+        safe_final = secure_filename(final_name)
+        if not safe_final.lower().endswith(".pdf"):
+            safe_final += ".pdf"
+
+        # Save archive copy
+        archive_filename = f"{uuid.uuid4()}.pdf"
+        archive_rel = archive_filename
+        archive_path = os.path.join(INVOICES_DIR, archive_filename)
+        with open(archive_path, "wb") as f:
+            f.write(resp.content)
+        size_bytes = os.path.getsize(archive_path)
+
+        record = _add_invoice_record(safe_final, client_name, archive_rel, size_bytes)
+
+        # Create one-time download temp copy
+        tmp_path = os.path.join(DOWNLOAD_TMP_DIR, f"{record['id']}.pdf")
+        with open(tmp_path, "wb") as f:
+            f.write(resp.content)
+
+        return jsonify({
+            "id": record["id"],
+            "name": record["name"],
+            "preview_url": url_for("preview_invoice", invoice_id=record["id"]),
+            "download_url": url_for("download_invoice_once", invoice_id=record["id"]),
+            "created_at": record["created_at"],
+            "size": record["size"],
+        })
+    except Exception as e:
+        return jsonify({"error": tr("flash_webhook_send_error", error=str(e))}), 500
+@app.get("/preview/<invoice_id>")
+@login_required
+def preview_invoice(invoice_id: str):
+    rec = _find_invoice_record(invoice_id)
+    if not rec:
+        return "Not found", 404
+    pdf_path = os.path.join(INVOICES_DIR, rec["file"])
+    if not os.path.exists(pdf_path):
+        return "Not found", 404
+    return send_file(pdf_path, mimetype="application/pdf", as_attachment=False, download_name=rec["name"])
+
+
+@app.get("/download-once/<invoice_id>")
+@login_required
+def download_invoice_once(invoice_id: str):
+    # Serve from temp and delete after response is processed
+    tmp_path = os.path.join(DOWNLOAD_TMP_DIR, f"{invoice_id}.pdf")
+    rec = _find_invoice_record(invoice_id)
+    if not rec or not os.path.exists(tmp_path):
+        return "Not found", 404
+
+    @after_this_request
+    def _cleanup(response):
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        return response
+
+    return send_file(tmp_path, mimetype="application/pdf", as_attachment=True, download_name=rec["name"])
+
+
+@app.get("/invoices")
+@login_required
+def invoices_dashboard():
+    # Filters: date range and sort
+    sort = (request.args.get("sort") or "newest").lower()
+    date_from = (request.args.get("from") or "").strip()
+    date_to = (request.args.get("to") or "").strip()
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = 7
+
+    meta = _load_invoices_meta()
+    items = meta.get("items", [])
+
+    def _in_range(it: dict[str, Any]) -> bool:
+        ts = it.get("created_at") or ""
+        if date_from and ts < date_from:
+            return False
+        if date_to and ts > date_to:
+            return False
+        return True
+
+    items = [it for it in items if _in_range(it)]
+    reverse = (sort != "oldest")
+    items.sort(key=lambda x: x.get("created_at", ""), reverse=reverse)
+
+    total = len(items)
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = items[start:end]
+
+    # Build prev/next URLs safely (Jinja does not support **kwargs unpack)
+    total_pages = (total // page_size) + (1 if total % page_size else 0)
+    def _build_url(target_page: int) -> str:
+        return url_for(
+            "invoices_dashboard",
+            page=target_page,
+            sort=sort,
+            **({"from": date_from} if date_from else {}),
+            **({"to": date_to} if date_to else {}),
+        )
+    prev_url = _build_url(page - 1) if page > 1 else None
+    next_url = _build_url(page + 1) if page < total_pages else None
+
+    return render_template(
+        "invoices.html",
+        items=page_items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        sort=sort,
+        date_from=date_from,
+        date_to=date_to,
+        prev_url=prev_url,
+        next_url=next_url,
+        total_pages=total_pages,
+    )
+
+
+@app.get("/api/invoices")
+@login_required
+def api_invoices_list():
+    sort = (request.args.get("sort") or "newest").lower()
+    date_from = (request.args.get("from") or "").strip()
+    date_to = (request.args.get("to") or "").strip()
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = max(int(request.args.get("page_size", 7)), 1)
+
+    meta = _load_invoices_meta()
+    items = meta.get("items", [])
+
+    def _in_range(it: dict[str, Any]) -> bool:
+        ts = it.get("created_at") or ""
+        if date_from and ts < date_from:
+            return False
+        if date_to and ts > date_to:
+            return False
+        return True
+
+    items = [it for it in items if _in_range(it)]
+    reverse = (sort != "oldest")
+    items.sort(key=lambda x: x.get("created_at", ""), reverse=reverse)
+
+    total = len(items)
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = items[start:end]
+    # Include URLs for convenience
+    for it in page_items:
+        it["preview_url"] = url_for("preview_invoice", invoice_id=it["id"]) 
+        it["download_url"] = url_for("download_invoice_once", invoice_id=it["id"]) 
+    return jsonify({"total": total, "page": page, "items": page_items})
+
+
+@app.post("/api/invoices/rename")
+@login_required
+def api_invoices_rename():
+    data = request.get_json(silent=True) or {}
+    rec_id = (data.get("id") or "").strip()
+    new_name = (data.get("name") or "").strip()
+    if not rec_id or not new_name:
+        return jsonify({"error": "id and name required"}), 400
+    ok = _update_invoice_name(rec_id, secure_filename(new_name if new_name.lower().endswith('.pdf') else new_name + '.pdf'))
+    if not ok:
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"ok": True})
 
 
 # ----------------------------

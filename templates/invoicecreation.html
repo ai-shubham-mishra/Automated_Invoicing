@@ -2,7 +2,7 @@
 {% import '_components.html' as ui %}
 {% block content %}
   <h1>{{ t('invoice_title') }}</h1>
-  <form method="post" action="{{ url_for('invoicecreation_post') }}" enctype="multipart/form-data">
+  <form id="invoice_form" method="post" action="{{ url_for('api_generate_invoice') }}" enctype="multipart/form-data">
     {% call ui.card() %}
       {% call ui.field(t('dropdown_label_search'), 'client_name') %}
         <div class="combo" style="position:relative;">
@@ -11,16 +11,24 @@
           <div id="combo_list" class="combo-list" style="position:absolute; z-index:10; width:100%; max-height:220px; overflow:auto; display:none;"></div>
         </div>
       {% endcall %}
+      {% call ui.field(t('invoice_name'), 'invoice_name') %}
+        <input type="text" id="invoice_name" name="invoice_name" placeholder="invoice.pdf">
+      {% endcall %}
       {% call ui.field(t('delivery_label'), 'delivery_notes') %}
         <input type="file" id="delivery_notes" name="delivery_notes" accept=".pdf" multiple>
       {% endcall %}
-      {{ ui.button(t('generate_button')) }}
+      {{ ui.button(t('generate_button'), attrs='id="generate_btn" type="submit"') }}
     {% endcall %}
   </form>
+  <div id="result_panel" style="display:none; margin-top:16px;"></div>
   <script>
     const comboInput = document.getElementById('combo_input');
     const comboList = document.getElementById('combo_list');
     const hiddenInput = document.getElementById('client_name');
+    const invoiceForm = document.getElementById('invoice_form');
+    const generateBtn = document.getElementById('generate_btn');
+    const resultPanel = document.getElementById('result_panel');
+    const invoiceNameEl = document.getElementById('invoice_name');
     let items = [];
     let open = false;
     let timer = null;
@@ -78,6 +86,52 @@
     comboInput.addEventListener('blur', () => setTimeout(closeList, 100));
     // preload (do not open)
     fetchCustomers('');
+
+    function setLoading(isLoading){
+      if(isLoading){
+        generateBtn.disabled = true;
+        const txt = generateBtn.textContent;
+        generateBtn.dataset.prev = txt;
+        generateBtn.textContent = "{{ t('please_wait') }}";
+        generateBtn.classList.add('loading');
+      } else {
+        generateBtn.disabled = false;
+        generateBtn.textContent = generateBtn.dataset.prev || "{{ t('generate_button') }}";
+        generateBtn.classList.remove('loading');
+      }
+    }
+
+    invoiceForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if(!hiddenInput.value){ return; }
+      const fd = new FormData(invoiceForm);
+      setLoading(true);
+      resultPanel.style.display = 'none';
+      resultPanel.innerHTML = '';
+      try{
+        const resp = await fetch(invoiceForm.action, { method: 'POST', body: fd });
+        const data = await resp.json().catch(() => ({}));
+        if(!resp.ok){
+          alert(data.error || 'Request failed');
+          return;
+        }
+        // Update invoice name if not set
+        if(!invoiceNameEl.value && data.name){ invoiceNameEl.value = data.name; }
+        resultPanel.style.display = 'block';
+        resultPanel.innerHTML = `
+          <div class="card">
+            <div class="card-body">
+              <div style="margin-bottom:8px;">${data.name || 'invoice.pdf'}</div>
+              <a class="btn" href="${data.preview_url}" target="_blank">{{ t('preview') }}</a>
+              <a class="btn btn-primary" href="${data.download_url}">{{ t('download') }}</a>
+            </div>
+          </div>`;
+      } catch(err){
+        alert(err?.message || 'Error');
+      } finally {
+        setLoading(false);
+      }
+    });
   </script>
 {% endblock %}
 

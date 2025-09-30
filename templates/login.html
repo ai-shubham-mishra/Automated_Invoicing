@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% import '_components.html' as ui %}
+{% block content %}
+  <h1>Login</h1>
+  <form method="post" action="{{ url_for('login_post', next=next) }}">
+    {% call ui.card() %}
+      {% call ui.field('Username', 'username') %}
+        <input type="text" id="username" name="username" required>
+      {% endcall %}
+      {% call ui.field('Password', 'password') %}
+        <input type="password" id="password" name="password" required>
+      {% endcall %}
+      {{ ui.button('Login', attrs='type="submit"') }}
+    {% endcall %}
+  </form>
+{% endblock %}
+
+
+

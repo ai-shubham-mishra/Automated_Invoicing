@@ -3,3 +3,4 @@ invoice
 clients.db
 .venv
 invoicing_db
+tmp

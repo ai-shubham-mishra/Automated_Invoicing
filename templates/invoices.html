@@ -1,0 +1,140 @@
+{% extends 'base.html' %}
+{% import '_components.html' as ui %}
+{% block content %}
+  <h1>{{ t('invoices') }}</h1>
+  {% call ui.card(t('filters')) %}
+    <form method="get" action="{{ url_for('invoices_dashboard') }}" class="filters">
+      <div class="filters-row">
+        <div class="filter-item">
+          <label for="from">{{ t('from') }}</label>
+          <input type="date" id="from" name="from" value="{{ date_from[:10] if date_from else '' }}">
+        </div>
+        <div class="filter-item">
+          <label for="to">{{ t('to') }}</label>
+          <input type="date" id="to" name="to" value="{{ date_to[:10] if date_to else '' }}">
+        </div>
+        <div class="filter-item">
+          <label for="sort">Sort</label>
+          <select id="sort" name="sort">
+            <option value="newest" {{ 'selected' if sort == 'newest' else '' }}>{{ t('sort_newest') }}</option>
+            <option value="oldest" {{ 'selected' if sort == 'oldest' else '' }}>{{ t('sort_oldest') }}</option>
+          </select>
+        </div>
+        <div class="filter-actions">
+          <button class="btn btn-primary" type="submit">Apply</button>
+        </div>
+      </div>
+    </form>
+  {% endcall %}
+
+  {% if items|length == 0 %}
+    <p>{{ t('no_invoices') }}</p>
+  {% else %}
+    <div class="card">
+      <div class="card-body">
+        <table class="table" style="width:100%; border-collapse:collapse;">
+          <thead>
+            <tr>
+              <th style="text-align:left; padding:8px;">Name</th>
+              <th style="text-align:left; padding:8px;">Client</th>
+              <th style="text-align:left; padding:8px;">Timestamp</th>
+              <th style="text-align:left; padding:8px;">Size</th>
+              <th style="text-align:left; padding:8px;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for it in items %}
+            <tr>
+              <td style="padding:8px;">{{ it.name }}</td>
+              <td style="padding:8px;">{{ it.client }}</td>
+              <td style="padding:8px;">{{ it.created_at }}</td>
+              <td style="padding:8px;">{{ (it.size // 1024) }} kB</td>
+              <td style="padding:8px; display:flex; gap:8px;">
+                <button class="btn" type="button" onclick="openPreview('{{ url_for('preview_invoice', invoice_id=it.id) }}', '{{ it.name }}')">{{ t('preview') }}</button>
+                <a class="btn btn-primary" href="{{ url_for('download_invoice_once', invoice_id=it.id) }}">{{ t('download') }}</a>
+                <button class="btn" type="button" onclick="openRename('{{ it.id }}', '{{ it.name }}')">{{ t('rename') }}</button>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div style="display:flex; justify-content:space-between; margin-top:12px;">
+          <div>
+            Page {{ page }} / {{ total_pages }}
+          </div>
+          <div style="display:flex; gap:8px;">
+            {% if prev_url %}
+              <a class="btn" href="{{ prev_url }}">Prev</a>
+            {% endif %}
+            {% if next_url %}
+              <a class="btn" href="{{ next_url }}">Next</a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  <div id="modal_backdrop" class="modal-backdrop" style="display:none;"></div>
+  <div id="modal" class="modal" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div id="modal_title"></div>
+        <button class="btn" type="button" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body" id="modal_body"></div>
+      <div class="modal-footer" id="modal_footer"></div>
+    </div>
+  </div>
+
+  <script>
+    const backdrop = document.getElementById('modal_backdrop');
+    const modal = document.getElementById('modal');
+    const modalTitle = document.getElementById('modal_title');
+    const modalBody = document.getElementById('modal_body');
+    const modalFooter = document.getElementById('modal_footer');
+
+    function openModal(title){
+      modalTitle.textContent = title || '';
+      backdrop.style.display = 'block';
+      modal.style.display = 'block';
+    }
+    function closeModal(){
+      modal.style.display = 'none';
+      backdrop.style.display = 'none';
+      modalTitle.textContent = '';
+      modalBody.innerHTML = '';
+      modalFooter.innerHTML = '';
+    }
+
+    function openPreview(url, name){
+      openModal('Preview');
+      modalBody.innerHTML = '<iframe src="' + url + '" style="width:100%; height:70vh; border:none; background:#0e1116;"></iframe>';
+      modalFooter.innerHTML = '';
+    }
+
+    function openRename(id, currentName){
+      openModal('Rename');
+      modalBody.innerHTML = '<input type="text" id="rename_input" value="' + (currentName || 'invoice.pdf') + '" style="width:100%;">';
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'btn btn-primary';
+      saveBtn.textContent = 'Save';
+      saveBtn.onclick = async () => {
+        const name = document.getElementById('rename_input').value.trim();
+        if(!name) return;
+        const resp = await fetch('/api/invoices/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, name }) });
+        if(!resp.ok){
+          const j = await resp.json().catch(() => ({}));
+          alert(j.error || 'Rename failed');
+          return;
+        }
+        closeModal();
+        location.reload();
+      };
+      modalFooter.appendChild(saveBtn);
+    }
+  </script>
+{% endblock %}
+
+
+

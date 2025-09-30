@@ -54,6 +54,11 @@ input[type="text"], input[type="date"], select, input[type="file"] {
   color: var(--text);
   padding: 10px 12px;
 }
+/* Filters */
+.filters { display: block; }
+.filters-row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.filter-item { display: flex; flex-direction: column; }
+.filter-actions { margin-bottom: 6px; }
 /* Combo list styling */
 .combo-list { background: #0f1318 !important; border: 1px solid var(--border) !important; color: var(--text) !important; border-radius: 8px; box-shadow: var(--shadow); }
 .combo-item { color: var(--text); }
@@ -82,6 +87,24 @@ input[type="text"], input[type="date"], select, input[type="file"] {
 .btn:hover { background: var(--primary-strong); color: #e6ecff; }
 .btn-secondary { background: #707a9a; color: #0b1024; }
 .btn-secondary:hover { background: #818ab1; }
+
+/* Loading state */
+.btn.loading { position: relative; color: transparent !important; }
+.btn.loading::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 16px; height: 16px;
+  margin: -8px 0 0 -8px;
+  border: 2px solid rgba(255,255,255,0.5);
+  border-top-color: rgba(10,20,40,0.9);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  0% { transform: rotate(0); }
+  100% { transform: rotate(360deg); }
+}
 
 .flashes { margin: 12px 0; }
 .flash { padding: 10px 12px; border-radius: 6px; margin-bottom: 10px; border: 1px solid var(--border); }
@@ -113,6 +136,24 @@ input[type="text"], input[type="date"], select, input[type="file"] {
   h1 { font-size: 18px; }
   .combo-list { max-height: 50vh; }
 }
+
+/* Modal */
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+}
+.modal {
+  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+}
+.modal-card {
+  width: min(920px, 92vw);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+.modal-header { display:flex; align-items:center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.modal-body { padding: 0; }
+.modal-footer { padding: 12px 16px; border-top: 1px solid var(--border); display:flex; justify-content:flex-end; gap:8px; }
 
 @media (max-width: 480px) {
   .container { padding: 12px; }
