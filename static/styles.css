@@ -87,6 +87,8 @@ input[type="text"], input[type="date"], select, input[type="file"] {
 .btn:hover { background: var(--primary-strong); color: #e6ecff; }
 .btn-secondary { background: #707a9a; color: #0b1024; }
 .btn-secondary:hover { background: #818ab1; }
+.btn-sm { padding: 6px 10px; font-weight: 600; text-decoration: none; }
+a.btn, a.btn:hover { text-decoration: none; }
 
 /* Loading state */
 .btn.loading { position: relative; color: transparent !important; }

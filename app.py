@@ -715,10 +715,10 @@ def invoices_dashboard():
     items = meta.get("items", [])
 
     def _in_range(it: dict[str, Any]) -> bool:
-        ts = it.get("created_at") or ""
-        if date_from and ts < date_from:
+        ts = (it.get("created_at") or "")[:10]
+        if date_from and ts < date_from[:10]:
             return False
-        if date_to and ts > date_to:
+        if date_to and ts > date_to[:10]:
             return False
         return True
 
@@ -772,10 +772,10 @@ def api_invoices_list():
     items = meta.get("items", [])
 
     def _in_range(it: dict[str, Any]) -> bool:
-        ts = it.get("created_at") or ""
-        if date_from and ts < date_from:
+        ts = (it.get("created_at") or "")[:10]
+        if date_from and ts < date_from[:10]:
             return False
-        if date_to and ts > date_to:
+        if date_to and ts > date_to[:10]:
             return False
         return True
 

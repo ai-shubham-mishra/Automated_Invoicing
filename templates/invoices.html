@@ -50,8 +50,8 @@
               <td style="padding:8px;">{{ it.created_at }}</td>
               <td style="padding:8px;">{{ (it.size // 1024) }} kB</td>
               <td style="padding:8px; display:flex; gap:8px;">
-                <button class="btn" type="button" onclick="openPreview('{{ url_for('preview_invoice', invoice_id=it.id) }}', '{{ it.name }}')">{{ t('preview') }}</button>
-                <a class="btn btn-primary" href="{{ url_for('download_invoice_once', invoice_id=it.id) }}">{{ t('download') }}</a>
+                <button class="btn btn-sm" type="button" onclick="openPreview('{{ url_for('preview_invoice', invoice_id=it.id) }}', '{{ it.name }}')">{{ t('preview') }}</button>
+                <a class="btn btn-primary btn-sm" href="{{ url_for('download_invoice_once', invoice_id=it.id) }}">{{ t('download') }}</a>
                 <button class="btn" type="button" onclick="openRename('{{ it.id }}', '{{ it.name }}')">{{ t('rename') }}</button>
               </td>
             </tr>
@@ -97,7 +97,7 @@
     function openModal(title){
       modalTitle.textContent = title || '';
       backdrop.style.display = 'block';
-      modal.style.display = 'block';
+      modal.style.display = 'flex';
     }
     function closeModal(){
       modal.style.display = 'none';
