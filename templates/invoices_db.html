@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% import '_components.html' as ui %}
 {% block content %}
-  <h1>{{ t('invoices') }} (DB)</h1>
+  <h1>{{ t('invoices') }}</h1>
   {% call ui.card(t('filters')) %}
     <form method="get" action="{{ url_for('invoices_db_dashboard') }}" class="filters">
       <div class="filters-row">
@@ -21,7 +21,7 @@
           </select>
         </div>
         <div class="filter-actions">
-          <button class="btn btn-primary" type="submit">Apply</button>
+          <button class="btn btn-primary btn-sm" type="submit">{{ t('apply') }}</button>
         </div>
       </div>
     </form>
@@ -32,6 +32,7 @@
   {% else %}
     <div class="card">
       <div class="card-body">
+        <div class="table-wrap">
         <table class="table" style="width:100%; border-collapse:collapse;">
           <thead>
             <tr>
@@ -49,26 +50,24 @@
               <td style="padding:8px;">{{ it.client }}</td>
               <td style="padding:8px;">{{ it.created_at }}</td>
               <td style="padding:8px;">{{ (it.size // 1024) }} kB</td>
-              <td style="padding:8px; display:flex; gap:8px;">
+              <td style="padding:8px; display:flex; gap:6px; flex-wrap: nowrap;">
                 <button class="btn btn-sm" type="button" onclick="openPreview('{{ url_for('preview_invoice', invoice_id=it.id) }}', '{{ it.name }}')">{{ t('preview') }}</button>
-                <a class="btn btn-primary btn-sm" href="{{ url_for('download_invoice_once', invoice_id=it.id) }}">{{ t('download') }}</a>
-                <button class="btn" type="button" onclick="openRename('{{ it.id }}', '{{ it.name }}')">{{ t('rename') }}</button>
+                <a class="btn btn-primary btn-sm" href="{{ url_for('download_invoice', invoice_id=it.id) }}">{{ t('download') }}</a>
+                <button class="btn btn-sm" type="button" onclick="openRename('{{ it.id }}', '{{ it.name }}')">{{ t('rename') }}</button>
+                <button class="btn btn-danger btn-sm" type="button" onclick="confirmDelete('{{ it.id }}')">{{ t('delete') }}</button>
               </td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
+        </div>
         <div style="display:flex; justify-content:space-between; margin-top:12px;">
           <div>
             Page {{ page }} / {{ total_pages }}
           </div>
           <div style="display:flex; gap:8px;">
-            {% if prev_url %}
-              <a class="btn" href="{{ prev_url }}">Prev</a>
-            {% endif %}
-            {% if next_url %}
-              <a class="btn" href="{{ next_url }}">Next</a>
-            {% endif %}
+            <a class="btn btn-sm {{ '' if prev_url else 'disabled' }}" href="{{ prev_url or '#' }}">{{ t('prev') }}</a>
+            <a class="btn btn-sm {{ '' if next_url else 'disabled' }}" href="{{ next_url or '#' }}">{{ t('next') }}</a>
           </div>
         </div>
       </div>
@@ -115,14 +114,18 @@
 
     function openRename(id, currentName){
       openModal('Rename');
-      modalBody.innerHTML = '<input type="text" id="rename_input" value="' + (currentName || 'invoice.pdf') + '" style="width:100%;">';
+      const base = (currentName || 'invoice.pdf').replace(/\.pdf$/i, '');
+      modalBody.innerHTML = '<div style="display:flex;align-items:center;gap:6px;">'
+        + '<input type="text" id="rename_input" value="' + base + '" style="width:100%;">'
+        + '<span>.pdf</span>'
+        + '</div>';
       const saveBtn = document.createElement('button');
       saveBtn.className = 'btn btn-primary';
       saveBtn.textContent = 'Save';
       saveBtn.onclick = async () => {
-        const name = document.getElementById('rename_input').value.trim();
+        const name = (document.getElementById('rename_input').value.trim() || 'invoice');
         if(!name) return;
-        const resp = await fetch('/api/invoices-db/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, name }) });
+        const resp = await fetch('/api/invoices/rename', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, name: name + '.pdf' }) });
         if(!resp.ok){
           const j = await resp.json().catch(() => ({}));
           alert(j.error || 'Rename failed');
@@ -132,6 +135,17 @@
         location.reload();
       };
       modalFooter.appendChild(saveBtn);
+    }
+
+    async function confirmDelete(id){
+      if(!confirm('Delete this invoice?')) return;
+      const resp = await fetch('/api/invoices/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      if(!resp.ok){
+        const j = await resp.json().catch(() => ({}));
+        alert(j.error || 'Delete failed');
+        return;
+      }
+      location.reload();
     }
   </script>
 {% endblock %}

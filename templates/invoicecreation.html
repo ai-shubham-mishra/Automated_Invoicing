@@ -12,7 +12,7 @@
         </div>
       {% endcall %}
       {% call ui.field(t('invoice_name'), 'invoice_name') %}
-        <input type="text" id="invoice_name" name="invoice_name" placeholder="invoice.pdf">
+        <input type="text" id="invoice_name" name="invoice_name" placeholder="{{ t('invoice_name_placeholder') }}">
       {% endcall %}
       {% call ui.field(t('delivery_label'), 'delivery_notes') %}
         <input type="file" id="delivery_notes" name="delivery_notes" accept=".pdf" multiple>

@@ -375,6 +375,11 @@ TRANSLATIONS = {
         "password": "Password",
         "login_button": "Login",
         "invalid_credentials": "Invalid credentials",
+        "apply": "Apply",
+        "delete": "Delete",
+        "invoice_name_placeholder": "enter the name of invoice",
+        "prev": "Prev",
+        "next": "Next",
     },
     "de": {
         "brand": "Rechnung erstellen",
@@ -423,6 +428,11 @@ TRANSLATIONS = {
         "password": "Passwort",
         "login_button": "Anmelden",
         "invalid_credentials": "Ungültige Zugangsdaten",
+        "apply": "Anwenden",
+        "delete": "Löschen",
+        "invoice_name_placeholder": "Name der Rechnung eingeben",
+        "prev": "Zurück",
+        "next": "Weiter",
     },
 }
 
@@ -772,6 +782,25 @@ def api_generate_invoice():
 @app.get("/preview/<invoice_id>")
 @login_required
 def preview_invoice(invoice_id: str):
+    # Prefer DB record first
+    try:
+        conn = get_invoices_db()
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, file FROM invoices WHERE id = ?", (invoice_id,))
+        r = cur.fetchone()
+        if r:
+            pdf_path = os.path.join(INVOICES_DIR, r["file"])
+            if not os.path.exists(pdf_path):
+                return "Not found", 404
+            return send_file(pdf_path, mimetype="application/pdf", as_attachment=False, download_name=r["name"])
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    # Fallback to legacy JSON meta
     rec = _find_invoice_record(invoice_id)
     if not rec:
         return "Not found", 404
@@ -801,7 +830,39 @@ def download_invoice_once(invoice_id: str):
     return send_file(tmp_path, mimetype="application/pdf", as_attachment=True, download_name=rec["name"])
 
 
-@app.get("/invoices")
+@app.get("/download/<invoice_id>")
+@login_required
+def download_invoice(invoice_id: str):
+    # Stable download from archive using current meta name
+    # Prefer DB first
+    try:
+        conn = get_invoices_db()
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, file FROM invoices WHERE id = ?", (invoice_id,))
+        r = cur.fetchone()
+        if r:
+            pdf_path = os.path.join(INVOICES_DIR, r["file"])
+            if not os.path.exists(pdf_path):
+                return "Not found", 404
+            return send_file(pdf_path, mimetype="application/pdf", as_attachment=True, download_name=r["name"])
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    # Fallback to legacy JSON meta
+    rec = _find_invoice_record(invoice_id)
+    if not rec:
+        return "Not found", 404
+    pdf_path = os.path.join(INVOICES_DIR, rec["file"])
+    if not os.path.exists(pdf_path):
+        return "Not found", 404
+    return send_file(pdf_path, mimetype="application/pdf", as_attachment=True, download_name=rec["name"])
+
+
+@app.get("/invoices-legacy")
 @login_required
 def invoices_dashboard():
     # Filters: date range and sort
@@ -859,7 +920,7 @@ def invoices_dashboard():
     )
 
 
-@app.get("/api/invoices")
+@app.get("/api/invoices-legacy")
 @login_required
 def api_invoices_list():
     sort = (request.args.get("sort") or "newest").lower()
@@ -894,7 +955,7 @@ def api_invoices_list():
     return jsonify({"total": total, "page": page, "items": page_items})
 
 
-@app.post("/api/invoices/rename")
+@app.post("/api/invoices-legacy/rename")
 @login_required
 def api_invoices_rename():
     data = request.get_json(silent=True) or {}
@@ -929,7 +990,7 @@ def api_customers():
 # ----------------------------
 # Invoices (DB-backed) pages and APIs
 # ----------------------------
-@app.get("/invoices-db")
+@app.get("/invoices")
 @login_required
 def invoices_db_dashboard():
     sort = (request.args.get("sort") or "newest").lower()
@@ -1003,7 +1064,7 @@ def invoices_db_dashboard():
     )
 
 
-@app.get("/api/invoices-db")
+@app.get("/api/invoices")
 @login_required
 def api_invoices_db_list():
     sort = (request.args.get("sort") or "newest").lower()
@@ -1041,11 +1102,11 @@ def api_invoices_db_list():
 
     for it in items:
         it["preview_url"] = url_for("preview_invoice", invoice_id=it["id"]) 
-        it["download_url"] = url_for("download_invoice_once", invoice_id=it["id"]) 
+        it["download_url"] = url_for("download_invoice", invoice_id=it["id"]) 
     return jsonify({"total": total, "page": page, "items": items})
 
 
-@app.post("/api/invoices-db/rename")
+@app.post("/api/invoices/rename")
 @login_required
 def api_invoices_db_rename():
     data = request.get_json(silent=True) or {}
@@ -1061,6 +1122,40 @@ def api_invoices_db_rename():
         if cur.rowcount == 0:
             return jsonify({"error": "not found"}), 404
         conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@app.post("/api/invoices/delete")
+@login_required
+def api_invoices_db_delete():
+    data = request.get_json(silent=True) or {}
+    rec_id = (data.get("id") or "").strip()
+    if not rec_id:
+        return jsonify({"error": "id required"}), 400
+    conn = get_invoices_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT file FROM invoices WHERE id = ?", (rec_id,))
+        r = cur.fetchone()
+        if not r:
+            return jsonify({"error": "not found"}), 404
+        file_rel = r["file"]
+        # Remove file if exists
+        try:
+            fpath = os.path.join(INVOICES_DIR, file_rel)
+            if os.path.exists(fpath):
+                os.remove(fpath)
+        except Exception:
+            pass
+        # Delete DB row
+        cur.execute("DELETE FROM invoices WHERE id = ?", (rec_id,))
+        conn.commit()
+        # Also remove from legacy JSON meta if present
+        meta = _load_invoices_meta()
+        meta["items"] = [it for it in meta.get("items", []) if it.get("id") != rec_id]
+        _save_invoices_meta(meta)
         return jsonify({"ok": True})
     finally:
         conn.close()
