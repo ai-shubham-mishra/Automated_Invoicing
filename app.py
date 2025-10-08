@@ -43,6 +43,16 @@ if not PRICING_DB_PATH:
 # Ensure the target directory for the SQLite file exists
 os.makedirs(os.path.dirname(PRICING_DB_PATH), exist_ok=True)
 
+# Dedicated Invoices metadata database (store metadata only; PDFs stay on disk)
+INVOICES_DB_PATH = os.getenv("INVOICES_DB_PATH")
+if not INVOICES_DB_PATH:
+    configured_inv_db_dir = os.getenv("INVOICES_DB_DIR") or os.getenv("INVOICE_DB_DIR")
+    if configured_inv_db_dir:
+        INVOICES_DB_PATH = os.path.join(configured_inv_db_dir, "invoices.db")
+    else:
+        INVOICES_DB_PATH = os.path.join(BASE_DIR, "invoices.db")
+os.makedirs(os.path.dirname(INVOICES_DB_PATH), exist_ok=True)
+
 # Set your n8n webhook URL here directly
 WEBHOOK_URL = os.getenv("INVOICE_WEBHOOK_URL")  # e.g., "http://localhost:5678/webhook/your-path"
 # Read timeout minutes for webhook response (default 5 minutes)
@@ -111,6 +121,54 @@ def insert_pricing_rows(conn: sqlite3.Connection, headers: list[str], rows: list
 def init_db() -> None:
     # Nothing to initialize for pricing DB beyond file existence; table is recreated on import
     os.makedirs(UPLOAD_DIR, exist_ok=True)
+    # Initialize invoices DB (metadata table)
+    try:
+        conn = sqlite3.connect(INVOICES_DB_PATH)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS "invoices" (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              client TEXT,
+              file TEXT NOT NULL,
+              size INTEGER NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_invoices_created_at ON invoices(created_at)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_invoices_client_created ON invoices(client, created_at)")
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def get_invoices_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(INVOICES_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def add_invoice_db_record(inv_id: str, name: str, client: str, rel_pdf_path: str, size_bytes: int, created_at_iso: str) -> None:
+    try:
+        conn = get_invoices_db()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT OR REPLACE INTO invoices (id, name, client, file, size, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (inv_id, name, client, rel_pdf_path, size_bytes, created_at_iso),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 # ----------------------------
@@ -690,6 +748,11 @@ def api_generate_invoice():
         size_bytes = os.path.getsize(archive_path)
 
         record = _add_invoice_record(safe_final, client_name, archive_rel, size_bytes)
+        # Also persist metadata to invoices DB (for the new DB-driven view)
+        try:
+            add_invoice_db_record(record["id"], record["name"], record["client"], record["file"], record["size"], record["created_at"])
+        except Exception:
+            pass
 
         # Create one-time download temp copy
         tmp_path = os.path.join(DOWNLOAD_TMP_DIR, f"{record['id']}.pdf")
@@ -861,6 +924,146 @@ def api_customers():
         return jsonify(customers)
     except Exception:
         return jsonify([]), 500
+
+
+# ----------------------------
+# Invoices (DB-backed) pages and APIs
+# ----------------------------
+@app.get("/invoices-db")
+@login_required
+def invoices_db_dashboard():
+    sort = (request.args.get("sort") or "newest").lower()
+    date_from = (request.args.get("from") or "").strip()
+    date_to = (request.args.get("to") or "").strip()
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = 7
+
+    conn = get_invoices_db()
+    try:
+        where = []
+        params: list[Any] = []
+        if date_from:
+            where.append("substr(created_at,1,10) >= ?")
+            params.append(date_from[:10])
+        if date_to:
+            where.append("substr(created_at,1,10) <= ?")
+            params.append(date_to[:10])
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM invoices {where_sql}", params)
+        row = cur.fetchone()
+        total = int(row[0]) if row is not None else 0
+
+        order = "DESC" if sort != "oldest" else "ASC"
+        offset = (page - 1) * page_size
+        cur.execute(
+            f"SELECT id, name, client, created_at, size, file FROM invoices {where_sql} ORDER BY created_at {order} LIMIT ? OFFSET ?",
+            params + [page_size, offset],
+        )
+        rows = cur.fetchall()
+        items = [
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "client": r["client"],
+                "created_at": r["created_at"],
+                "size": r["size"],
+                "file": r["file"],
+            }
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+    total_pages = (total // page_size) + (1 if total % page_size else 0)
+    def _build_url(target_page: int) -> str:
+        return url_for(
+            "invoices_db_dashboard",
+            page=target_page,
+            sort=sort,
+            **({"from": date_from} if date_from else {}),
+            **({"to": date_to} if date_to else {}),
+        )
+    prev_url = _build_url(page - 1) if page > 1 else None
+    next_url = _build_url(page + 1) if page < total_pages else None
+
+    return render_template(
+        "invoices_db.html",
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        sort=sort,
+        date_from=date_from,
+        date_to=date_to,
+        prev_url=prev_url,
+        next_url=next_url,
+        total_pages=total_pages,
+    )
+
+
+@app.get("/api/invoices-db")
+@login_required
+def api_invoices_db_list():
+    sort = (request.args.get("sort") or "newest").lower()
+    date_from = (request.args.get("from") or "").strip()
+    date_to = (request.args.get("to") or "").strip()
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = max(int(request.args.get("page_size", 7)), 1)
+
+    conn = get_invoices_db()
+    try:
+        where = []
+        params: list[Any] = []
+        if date_from:
+            where.append("substr(created_at,1,10) >= ?")
+            params.append(date_from[:10])
+        if date_to:
+            where.append("substr(created_at,1,10) <= ?")
+            params.append(date_to[:10])
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM invoices {where_sql}", params)
+        row = cur.fetchone()
+        total = int(row[0]) if row is not None else 0
+
+        order = "DESC" if sort != "oldest" else "ASC"
+        offset = (page - 1) * page_size
+        cur.execute(
+            f"SELECT id, name, client, created_at, size FROM invoices {where_sql} ORDER BY created_at {order} LIMIT ? OFFSET ?",
+            params + [page_size, offset],
+        )
+        items = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    for it in items:
+        it["preview_url"] = url_for("preview_invoice", invoice_id=it["id"]) 
+        it["download_url"] = url_for("download_invoice_once", invoice_id=it["id"]) 
+    return jsonify({"total": total, "page": page, "items": items})
+
+
+@app.post("/api/invoices-db/rename")
+@login_required
+def api_invoices_db_rename():
+    data = request.get_json(silent=True) or {}
+    rec_id = (data.get("id") or "").strip()
+    new_name = (data.get("name") or "").strip()
+    if not rec_id or not new_name:
+        return jsonify({"error": "id and name required"}), 400
+    safe = secure_filename(new_name if new_name.lower().endswith('.pdf') else new_name + '.pdf')
+    conn = get_invoices_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE invoices SET name = ? WHERE id = ?", (safe, rec_id))
+        if cur.rowcount == 0:
+            return jsonify({"error": "not found"}), 404
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
 
 
 @app.get("/api/prices")
