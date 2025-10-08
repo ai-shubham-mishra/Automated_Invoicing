@@ -7,9 +7,10 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   </head>
   <body>
+    {% if is_authed %}
     <header class="appbar">
       <div class="container appbar-inner">
-        <a href="{{ url_for('feeddata_get') }}" class="brand">{{ t('brand') }}</a>
+        <a href="{{ url_for('invoicecreation_get') }}" class="brand">{{ t('brand') }}</a>
         <nav class="tabs">
           <a href="{{ url_for('feeddata_get') }}" class="tab {{ 'active' if request.path == url_for('feeddata_get') else '' }}">{{ t('feed_title') }}</a>
           <a href="{{ url_for('invoicecreation_get') }}" class="tab {{ 'active' if request.path == url_for('invoicecreation_get') else '' }}">{{ t('invoice_title') }}</a>
@@ -27,6 +28,7 @@
         {% endif %}
       </div>
     </header>
+    {% endif %}
 
     <main class="container page">
       {% with messages = get_flashed_messages(with_categories=true) %}

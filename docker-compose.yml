@@ -9,7 +9,7 @@ services:
       - "8000:8000"
     environment:
       - GUNICORN_TIMEOUT=300
-      - GUNICORN_WORKERS=1 
+      - GUNICORN_WORKERS=2 
       - INVOICE_WEBHOOK_TIMEOUT_MIN=5
     env_file:
       - /opt/config/invoicing.env

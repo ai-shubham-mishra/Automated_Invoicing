@@ -414,6 +414,8 @@ def login_required(view):
 
 @app.get("/login")
 def login_get():
+    if session.get("auth"):
+        return redirect(url_for("invoicecreation_get"))
     return render_template("login.html", next=request.args.get("next", ""))
 
 
@@ -435,7 +437,13 @@ def logout():
     return redirect(url_for("login_get"))
 @app.route("/")
 def index():
-    return redirect(url_for("feeddata_get"))
+    if session.get("auth"):
+        return redirect(url_for("invoicecreation_get"))
+    return redirect(url_for("login_get"))
+
+@app.get("/health")
+def health():
+    return "ok", 200
 
 
 @app.get("/feeddata")
@@ -850,7 +858,8 @@ def api_customers():
             return jsonify([])
         customers = list_distinct_kunde_names(pconn, q if q else None)
         pconn.close()
-        return jsonify(customers)
+        # Cap results to avoid heavy payloads
+        return jsonify(customers[:50])
     except Exception:
         return jsonify([]), 500
 
