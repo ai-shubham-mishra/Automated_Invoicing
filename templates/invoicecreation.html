@@ -61,8 +61,7 @@
       });
     }
     async function fetchCustomers(q){
-      if(!q || q.length < 2){ items = []; renderList(q); return; }
-      const url = '/api/customers?q=' + encodeURIComponent(q);
+      const url = q ? (`/api/customers?q=` + encodeURIComponent(q)) : '/api/customers';
       const resp = await fetch(url);
       if(!resp.ok) return;
       items = await resp.json();
@@ -85,7 +84,8 @@
     });
     comboInput.addEventListener('focus', () => { fetchCustomers(comboInput.value.trim()); });
     comboInput.addEventListener('blur', () => setTimeout(closeList, 100));
-    // no preload; wait for at least 2 characters
+    // preload (do not open)
+    fetchCustomers('');
 
     function setLoading(isLoading){
       if(isLoading){

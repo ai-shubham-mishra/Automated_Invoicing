@@ -858,8 +858,7 @@ def api_customers():
             return jsonify([])
         customers = list_distinct_kunde_names(pconn, q if q else None)
         pconn.close()
-        # Cap results to avoid heavy payloads
-        return jsonify(customers[:50])
+        return jsonify(customers)
     except Exception:
         return jsonify([]), 500
 
