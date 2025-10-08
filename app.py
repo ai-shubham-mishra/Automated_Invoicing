@@ -455,14 +455,11 @@ def tr(key: str, **kwargs) -> str:
 def inject_i18n():
     return {"t": tr, "lang": get_lang(), "is_authed": bool(session.get("auth"))}
 
-
-# Ensure DBs/tables are initialized when running under Gunicorn
-@app.before_first_request
-def _ensure_init_db():
-    try:
-        init_db()
-    except Exception:
-        pass
+# Ensure DBs/tables are initialized on import (works with Gunicorn)
+try:
+    init_db()
+except Exception:
+    pass
 
 
 @app.get("/set-lang")
