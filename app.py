@@ -456,6 +456,15 @@ def inject_i18n():
     return {"t": tr, "lang": get_lang(), "is_authed": bool(session.get("auth"))}
 
 
+# Ensure DBs/tables are initialized when running under Gunicorn
+@app.before_first_request
+def _ensure_init_db():
+    try:
+        init_db()
+    except Exception:
+        pass
+
+
 @app.get("/set-lang")
 def set_lang():
     lang = (request.args.get("lang") or "").lower()
