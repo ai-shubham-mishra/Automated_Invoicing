@@ -18,6 +18,7 @@
         <input type="file" id="delivery_notes" name="delivery_notes" accept=".pdf" multiple>
       {% endcall %}
       {{ ui.button(t('generate_button'), attrs='id="generate_btn" type="submit"') }}
+      <div id="eta_msg" style="display:none; margin-top:6px; font-size:0.9em; opacity:0.8;"></div>
     {% endcall %}
   </form>
   <div id="result_panel" style="display:none; margin-top:16px;"></div>
@@ -29,6 +30,9 @@
     const generateBtn = document.getElementById('generate_btn');
     const resultPanel = document.getElementById('result_panel');
     const invoiceNameEl = document.getElementById('invoice_name');
+    const deliveryNotesInput = document.getElementById('delivery_notes');
+    const etaMsg = document.getElementById('eta_msg');
+    let etaInterval = null;
     let items = [];
     let open = false;
     let timer = null;
@@ -87,6 +91,38 @@
     // preload (do not open)
     fetchCustomers('');
 
+    function formatMMSS(totalSeconds){
+      const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+      const s = Math.floor(totalSeconds % 60).toString().padStart(2, '0');
+      return `${m}:${s}`;
+    }
+
+    function startEtaCountdown(){
+      if(etaInterval){ clearInterval(etaInterval); etaInterval = null; }
+      const files = deliveryNotesInput && deliveryNotesInput.files ? deliveryNotesInput.files : null;
+      const count = files ? files.length : 0;
+      // 30 seconds per PDF + 30 seconds buffer
+      let seconds = (count * 30) + 30;
+      if(seconds < 30) seconds = 30; // minimum display window
+      const label = 'Estimated time remaining:';
+      const updateView = () => {
+        etaMsg.textContent = `${label} ${formatMMSS(seconds)}`;
+      };
+      etaMsg.style.display = 'block';
+      updateView();
+      etaInterval = setInterval(() => {
+        seconds -= 1;
+        if(seconds <= 0){
+          seconds = 0;
+          updateView();
+          clearInterval(etaInterval);
+          etaInterval = null;
+          return;
+        }
+        updateView();
+      }, 1000);
+    }
+
     function setLoading(isLoading){
       if(isLoading){
         generateBtn.disabled = true;
@@ -94,10 +130,13 @@
         generateBtn.dataset.prev = txt;
         generateBtn.textContent = "{{ t('please_wait') }}";
         generateBtn.classList.add('loading');
+        startEtaCountdown();
       } else {
         generateBtn.disabled = false;
         generateBtn.textContent = generateBtn.dataset.prev || "{{ t('generate_button') }}";
         generateBtn.classList.remove('loading');
+        if(etaInterval){ clearInterval(etaInterval); etaInterval = null; }
+        if(etaMsg){ etaMsg.style.display = 'none'; etaMsg.textContent = ''; }
       }
     }
 
