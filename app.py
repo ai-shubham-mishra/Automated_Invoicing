@@ -673,6 +673,7 @@ def _update_invoice_name(rec_id: str, new_name: str) -> bool:
 def api_generate_invoice():
     client_name = (request.form.get("client_name") or "").strip()
     invoice_name = (request.form.get("invoice_name") or "").strip()
+    currency_exchange_raw = request.form.get("currency_exchange")
     if not client_name:
         flash("Bitte einen Kunden auswählen.", "error")
         return jsonify({"error": "client_name required"}), 400
@@ -705,6 +706,20 @@ def api_generate_invoice():
 
     # Attach the pricing rows once as a standalone schema field
     data_fields.append(("schema", json.dumps(rows, ensure_ascii=False)))
+    # Attach currency exchange block if provided by frontend
+    if currency_exchange_raw:
+        try:
+            # Validate JSON minimally and enforce base semantics
+            cx = json.loads(currency_exchange_raw)
+            if isinstance(cx, dict):
+                # Ensure base set to CHF and CHF rate=1 when code is CHF
+                cx.setdefault("base", "CHF")
+                if cx.get("code") == "CHF":
+                    cx["rate"] = 1.0
+                data_fields.append(("currency_exchange", json.dumps(cx, ensure_ascii=False)))
+        except Exception:
+            # If invalid, omit silently; webhook can proceed without FX
+            pass
 
     if valid_pdfs:
         for idx, pdf in enumerate(valid_pdfs):

@@ -17,6 +17,18 @@
       {% call ui.field(t('delivery_label'), 'delivery_notes') %}
         <input type="file" id="delivery_notes" name="delivery_notes" accept=".pdf" multiple>
       {% endcall %}
+      {% call ui.field(t('currency'), 'currency_code') %}
+        <select id="currency_code" name="currency_code">
+          <option value="CHF">CHF</option>
+          <option value="EUR">EUR</option>
+          <option value="USD">USD</option>
+          <option value="GBP">GBP</option>
+          <option value="BRL">BRL</option>
+          <option value="JPY">JPY</option>
+          <option value="CNY">CNY</option>
+        </select>
+        <input type="hidden" id="currency_exchange" name="currency_exchange" value="">
+      {% endcall %}
       {{ ui.button(t('generate_button'), attrs='id="generate_btn" type="submit"') }}
       <div id="eta_msg" style="display:none; margin-top:6px; font-size:0.9em; opacity:0.8;"></div>
     {% endcall %}
@@ -31,6 +43,8 @@
     const resultPanel = document.getElementById('result_panel');
     const invoiceNameEl = document.getElementById('invoice_name');
     const deliveryNotesInput = document.getElementById('delivery_notes');
+    const currencySelect = document.getElementById('currency_code');
+    const currencyExchangeInput = document.getElementById('currency_exchange');
     const etaMsg = document.getElementById('eta_msg');
     let etaInterval = null;
     let items = [];
@@ -91,6 +105,80 @@
     // preload (do not open)
     fetchCustomers('');
 
+    // Currency rounding configuration and FX helpers
+    const CCY_ROUNDING = {
+      CHF: 0.05,
+      EUR: 0.01,
+      USD: 0.01,
+      GBP: 0.01,
+      BRL: 0.01,
+      JPY: 0.01,
+      CNY: 0.01,
+    };
+
+    async function fetchFxFromFrankfurter(code){
+      // Frankfurter returns last business day on weekends
+      const url = `https://api.frankfurter.app/latest?from=CHF&to=${encodeURIComponent(code)}`;
+      const resp = await fetch(url);
+      if(!resp.ok) throw new Error('Frankfurter error');
+      const data = await resp.json();
+      const rate = data && data.rates && data.rates[code];
+      if(typeof rate !== 'number') throw new Error('Frankfurter missing rate');
+      return { rate, asOf: data.date, provider: 'Frankfurter', quoteType: 'ECB daily' };
+    }
+
+    async function fetchFxFromHost(code){
+      // exchangerate.host fallback (free, no key)
+      const url = `https://api.exchangerate.host/latest?base=CHF&symbols=${encodeURIComponent(code)}`;
+      const resp = await fetch(url);
+      if(!resp.ok) throw new Error('exchangerate.host error');
+      const data = await resp.json();
+      const rate = data && data.rates && data.rates[code];
+      if(typeof rate !== 'number') throw new Error('exchangerate.host missing rate');
+      // exchangerate.host returns date in data.date as well
+      return { rate, asOf: data.date || new Date().toISOString().slice(0,10), provider: 'exchangerate.host', quoteType: 'aggregated' };
+    }
+
+    async function resolveCurrencyExchange(code){
+      if(code === 'CHF'){
+        return {
+          base: 'CHF',
+          code: 'CHF',
+          rate: 1.00,
+          asOf: new Date().toISOString().slice(0,10),
+          provider: 'static',
+          quoteType: 'identity',
+          rounding: CCY_ROUNDING['CHF'] || 0.05,
+          precision: 6,
+        };
+      }
+      try{
+        const res = await fetchFxFromFrankfurter(code);
+        return {
+          base: 'CHF',
+          code,
+          rate: res.rate,
+          asOf: res.asOf,
+          provider: res.provider,
+          quoteType: res.quoteType,
+          rounding: CCY_ROUNDING[code] || 0.01,
+          precision: 6,
+        };
+      } catch(_e){
+        const res = await fetchFxFromHost(code);
+        return {
+          base: 'CHF',
+          code,
+          rate: res.rate,
+          asOf: res.asOf,
+          provider: res.provider,
+          quoteType: res.quoteType,
+          rounding: CCY_ROUNDING[code] || 0.01,
+          precision: 6,
+        };
+      }
+    }
+
     function formatMMSS(totalSeconds){
       const m = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
       const s = Math.floor(totalSeconds % 60).toString().padStart(2, '0');
@@ -148,6 +236,11 @@
       resultPanel.style.display = 'none';
       resultPanel.innerHTML = '';
       try{
+        // Resolve currency exchange before sending
+        const selectedCode = (currencySelect && currencySelect.value) ? currencySelect.value : 'CHF';
+        const cx = await resolveCurrencyExchange(selectedCode);
+        if(currencyExchangeInput){ currencyExchangeInput.value = JSON.stringify(cx); }
+        fd.set('currency_exchange', JSON.stringify(cx));
         const resp = await fetch(invoiceForm.action, { method: 'POST', body: fd });
         const data = await resp.json().catch(() => ({}));
         if(!resp.ok){
