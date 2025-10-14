@@ -13,6 +13,8 @@
       {% endcall %}
       {% call ui.field(t('invoice_name'), 'invoice_name') %}
         <input type="text" id="invoice_name" name="invoice_name" placeholder="{{ t('invoice_name_placeholder') }}">
+        <div id="invoice_name_hint" style="margin-top:6px; font-size:0.9em; display:none;"></div>
+        <div id="invoice_name_suggestions" style="margin-top:4px; display:none;"></div>
       {% endcall %}
       {% call ui.field(t('delivery_label'), 'delivery_notes') %}
         <input type="file" id="delivery_notes" name="delivery_notes" accept=".pdf" multiple>
@@ -42,6 +44,8 @@
     const generateBtn = document.getElementById('generate_btn');
     const resultPanel = document.getElementById('result_panel');
     const invoiceNameEl = document.getElementById('invoice_name');
+    const invoiceNameHint = document.getElementById('invoice_name_hint');
+    const invoiceNameSug = document.getElementById('invoice_name_suggestions');
     const deliveryNotesInput = document.getElementById('delivery_notes');
     const currencySelect = document.getElementById('currency_code');
     const currencyExchangeInput = document.getElementById('currency_exchange');
@@ -50,6 +54,7 @@
     let items = [];
     let open = false;
     let timer = null;
+    let nameTimer = null;
 
     function openList(){ comboList.style.display = 'block'; open = true; }
     function closeList(){ comboList.style.display = 'none'; open = false; }
@@ -228,10 +233,93 @@
       }
     }
 
+    function stripTrailingPdf(name){
+      if(!name) return '';
+      const s = String(name);
+      return s.toLowerCase().endsWith('.pdf') ? s.slice(0, -4) : s;
+    }
+
+    function setNameHintAvailable(){
+      if(!invoiceNameHint) return;
+      invoiceNameHint.style.display = 'block';
+      invoiceNameHint.style.color = '#0a7f2e';
+      invoiceNameHint.textContent = 'Name available';
+    }
+
+    function setNameHintTaken(){
+      if(!invoiceNameHint) return;
+      invoiceNameHint.style.display = 'block';
+      invoiceNameHint.style.color = '#a31212';
+      invoiceNameHint.textContent = 'Invoice with this name already exists. Try adding a date (e.g., 20251014) or a number.';
+    }
+
+    function clearNameHint(){
+      if(invoiceNameHint){ invoiceNameHint.style.display = 'none'; invoiceNameHint.textContent=''; }
+      if(invoiceNameSug){ invoiceNameSug.style.display = 'none'; invoiceNameSug.innerHTML=''; }
+    }
+
+    function renderNameSuggestions(suggestions){
+      if(!invoiceNameSug) return;
+      invoiceNameSug.innerHTML = '';
+      if(!suggestions || !suggestions.length){
+        invoiceNameSug.style.display = 'none';
+        return;
+      }
+      invoiceNameSug.style.display = 'block';
+      suggestions.slice(0,3).forEach(s => {
+        const a = document.createElement('a');
+        a.href = '#';
+        a.textContent = s;
+        a.style.marginRight = '8px';
+        a.addEventListener('click', (ev) => {
+          ev.preventDefault();
+          invoiceNameEl.value = s;
+          // trigger recheck immediately
+          checkInvoiceNameAvailability(s);
+        });
+        invoiceNameSug.appendChild(a);
+      });
+    }
+
+    async function checkInvoiceNameAvailability(raw){
+      const v = stripTrailingPdf((raw ?? invoiceNameEl.value).trim());
+      if(!v){ clearNameHint(); return { available: true }; }
+      try{
+        const resp = await fetch(`/api/invoices/check-name?name=${encodeURIComponent(v)}`);
+        if(!resp.ok){ clearNameHint(); return { available: true }; }
+        const data = await resp.json();
+        if(data.available){
+          setNameHintAvailable();
+          renderNameSuggestions([]);
+        } else {
+          setNameHintTaken();
+          renderNameSuggestions(data.suggestions || []);
+        }
+        return data;
+      } catch(_e){
+        clearNameHint();
+        return { available: true };
+      }
+    }
+
+    invoiceNameEl.addEventListener('input', () => {
+      if(nameTimer) clearTimeout(nameTimer);
+      const raw = invoiceNameEl.value;
+      if(!raw || !raw.trim()){ clearNameHint(); return; }
+      nameTimer = setTimeout(() => { checkInvoiceNameAvailability(raw); }, 350);
+    });
+
     invoiceForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       if(!hiddenInput.value){ return; }
+      // Recheck availability on submit to avoid race
+      const check = await checkInvoiceNameAvailability(invoiceNameEl.value);
+      if(check && check.available === false){
+        // Do not proceed; guide user
+        return;
+      }
       const fd = new FormData(invoiceForm);
+      // ensure we don't pass .pdf in Invoice_name server side already handles, but keep raw user value
       setLoading(true);
       resultPanel.style.display = 'none';
       resultPanel.innerHTML = '';

@@ -668,6 +668,16 @@ def _update_invoice_name(rec_id: str, new_name: str) -> bool:
     return changed
 
 
+# ----------------------------
+# Helpers
+# ----------------------------
+def strip_trailing_pdf(name: str) -> str:
+    s = name or ""
+    if len(s) >= 4 and s.lower().endswith(".pdf"):
+        return s[:-4]
+    return s
+
+
 @app.post("/api/generate_invoice")
 @login_required
 def api_generate_invoice():
@@ -706,6 +716,14 @@ def api_generate_invoice():
 
     # Attach the pricing rows once as a standalone schema field
     data_fields.append(("schema", json.dumps(rows, ensure_ascii=False)))
+    # Include Invoice_name for downstream (exactly as user typed, minus trailing .pdf)
+    try:
+        invoice_name_raw = invoice_name
+        invoice_name_no_pdf = strip_trailing_pdf(invoice_name_raw)
+        if invoice_name_no_pdf:
+            data_fields.append(("Invoice_name", invoice_name_no_pdf))
+    except Exception:
+        pass
     # Attach currency exchange block if provided by frontend
     if currency_exchange_raw:
         try:
@@ -800,6 +818,72 @@ def api_generate_invoice():
         })
     except Exception as e:
         return jsonify({"error": tr("flash_webhook_send_error", error=str(e))}), 500
+
+
+@app.get("/api/invoices/check-name")
+@login_required
+def api_check_invoice_name():
+    raw = request.args.get("name") or ""
+    # Keep case and internal spaces; only strip trailing whitespace and trailing .pdf
+    display = strip_trailing_pdf(raw.strip())
+    # Check availability against DB using the sanitized final filename policy (secure_filename + .pdf)
+    candidate_base = secure_filename(display) if display else ""
+    candidate_pdf = (candidate_base + ".pdf") if candidate_base and not candidate_base.lower().endswith('.pdf') else candidate_base
+
+    available = True
+    try:
+        conn = get_invoices_db()
+        cur = conn.cursor()
+        if candidate_pdf:
+            cur.execute("SELECT 1 FROM invoices WHERE name = ? LIMIT 1", (candidate_pdf,))
+            row = cur.fetchone()
+            available = (row is None)
+        else:
+            # Empty names are considered available but not suggested
+            available = True
+    except Exception:
+        available = True
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    # Suggestions: date-first, then numeric suffixes; ensure availability after sanitization
+    suggestions: list[str] = []
+    base_for_suggestion = display
+    if base_for_suggestion:
+        today = datetime.utcnow().strftime("%Y%m%d")
+        candidates = [f"{base_for_suggestion}_{today}"]
+        # numeric fallback 2..5
+        for i in range(2, 6):
+            candidates.append(f"{base_for_suggestion}_{i}")
+
+        try:
+            conn = get_invoices_db()
+            cur = conn.cursor()
+            for cand in candidates:
+                if len(suggestions) >= 3:
+                    break
+                cand_base = secure_filename(strip_trailing_pdf(cand))
+                cand_pdf = cand_base if cand_base.lower().endswith('.pdf') else (cand_base + '.pdf')
+                cur.execute("SELECT 1 FROM invoices WHERE name = ? LIMIT 1", (cand_pdf,))
+                if cur.fetchone() is None:
+                    suggestions.append(cand)
+        except Exception:
+            # On error, still return computed suggestions without DB guarantee
+            suggestions = candidates[:3]
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return jsonify({
+        "name": display,
+        "available": available,
+        "suggestions": suggestions,
+    })
 @app.get("/preview/<invoice_id>")
 @login_required
 def preview_invoice(invoice_id: str):
