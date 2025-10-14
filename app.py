@@ -677,12 +677,21 @@ def strip_trailing_pdf(name: str) -> str:
         return s[:-4]
     return s
 
+def convert_newlines_to_br(text: str | None) -> str | None:
+    if text is None:
+        return None
+    # Normalize CRLF/CR to LF first, then convert to <br>
+    s = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    return s.replace("\n", "<br>")
+
 
 @app.post("/api/generate_invoice")
 @login_required
 def api_generate_invoice():
     client_name = (request.form.get("client_name") or "").strip()
     invoice_name = (request.form.get("invoice_name") or "").strip()
+    title_invoice = request.form.get("titleInvoice")  # pass-through as-is
+    header_invoice = request.form.get("headerInvoice")  # pass-through as-is
     currency_exchange_raw = request.form.get("currency_exchange")
     if not client_name:
         flash("Bitte einen Kunden auswählen.", "error")
@@ -724,6 +733,11 @@ def api_generate_invoice():
             data_fields.append(("Invoice_name", invoice_name_no_pdf))
     except Exception:
         pass
+    # Include optional Title/Header fields
+    if title_invoice is not None and str(title_invoice).strip() != "":
+        data_fields.append(("titleInvoice", str(title_invoice)))
+    if header_invoice is not None and str(header_invoice).strip() != "":
+        data_fields.append(("headerInvoice", convert_newlines_to_br(str(header_invoice))))
     # Attach currency exchange block if provided by frontend
     if currency_exchange_raw:
         try:
@@ -835,7 +849,8 @@ def api_check_invoice_name():
         conn = get_invoices_db()
         cur = conn.cursor()
         if candidate_pdf:
-            cur.execute("SELECT 1 FROM invoices WHERE name = ? LIMIT 1", (candidate_pdf,))
+            # Case-insensitive uniqueness: abbey and ABBEY considered the same
+            cur.execute("SELECT 1 FROM invoices WHERE lower(name) = lower(?) LIMIT 1", (candidate_pdf,))
             row = cur.fetchone()
             available = (row is None)
         else:
@@ -867,7 +882,7 @@ def api_check_invoice_name():
                     break
                 cand_base = secure_filename(strip_trailing_pdf(cand))
                 cand_pdf = cand_base if cand_base.lower().endswith('.pdf') else (cand_base + '.pdf')
-                cur.execute("SELECT 1 FROM invoices WHERE name = ? LIMIT 1", (cand_pdf,))
+                cur.execute("SELECT 1 FROM invoices WHERE lower(name) = lower(?) LIMIT 1", (cand_pdf,))
                 if cur.fetchone() is None:
                     suggestions.append(cand)
         except Exception:

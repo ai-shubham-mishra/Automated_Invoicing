@@ -16,6 +16,13 @@
         <div id="invoice_name_hint" style="margin-top:6px; font-size:0.9em; display:none;"></div>
         <div id="invoice_name_suggestions" style="margin-top:4px; display:none;"></div>
       {% endcall %}
+      {% call ui.field('Title', 'titleInvoice') %}
+        <input type="text" id="titleInvoice" name="titleInvoice" placeholder="e.g., November 2025 Sales Summary" maxlength="1000" style="width:100%;">
+        <div id="titleInvoice_hint" style="margin-top:6px; font-size:0.9em; color:#666;"></div>
+      {% endcall %}
+      {% call ui.field('Header', 'headerInvoice') %}
+        <textarea id="headerInvoice" name="headerInvoice" rows="5" placeholder="Paste or write the header paragraph here" style="width:100%; resize:vertical; max-height:220px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
+      {% endcall %}
       {% call ui.field(t('delivery_label'), 'delivery_notes') %}
         <input type="file" id="delivery_notes" name="delivery_notes" accept=".pdf" multiple>
       {% endcall %}
@@ -55,6 +62,7 @@
     let open = false;
     let timer = null;
     let nameTimer = null;
+    let titleTimer = null;
 
     function openList(){ comboList.style.display = 'block'; open = true; }
     function closeList(){ comboList.style.display = 'none'; open = false; }
@@ -239,6 +247,23 @@
       return s.toLowerCase().endsWith('.pdf') ? s.slice(0, -4) : s;
     }
 
+    // Title word counter (non-blocking guidance)
+    const titleEl = document.getElementById('titleInvoice');
+    const titleHint = document.getElementById('titleInvoice_hint');
+    function updateTitleHint(){
+      if(!titleEl || !titleHint) return;
+      const words = (titleEl.value || '').trim().split(/\s+/).filter(Boolean);
+      const count = words.length;
+      titleHint.textContent = '';
+    }
+    if(titleEl){
+      updateTitleHint();
+      titleEl.addEventListener('input', () => {
+        if(titleTimer) clearTimeout(titleTimer);
+        titleTimer = setTimeout(updateTitleHint, 150);
+      });
+    }
+
     function setNameHintAvailable(){
       if(!invoiceNameHint) return;
       invoiceNameHint.style.display = 'block';
@@ -319,6 +344,8 @@
         return;
       }
       const fd = new FormData(invoiceForm);
+      // Include Title and Header as provided; no extra normalization
+      // (backend will forward as-is)
       // ensure we don't pass .pdf in Invoice_name server side already handles, but keep raw user value
       setLoading(true);
       resultPanel.style.display = 'none';

@@ -5,3 +5,4 @@ clients.db
 invoicing_db
 tmp
 invoices.db
+*.db
