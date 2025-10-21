@@ -6,3 +6,4 @@ invoicing_db
 tmp
 invoices.db
 *.db
+resources

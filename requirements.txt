@@ -6,8 +6,11 @@ requests==2.32.3
 streamlit
 flask
 requests 
-dotenv
+python-dotenv
 Pillow
 
 Werkzeug==3.1.1
 gunicorn==21.2.0
+
+xlsxwriter
+Jellyfish==1.0.3

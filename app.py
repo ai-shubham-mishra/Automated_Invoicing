@@ -10,6 +10,11 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from werkzeug.utils import secure_filename
 
 import pandas as pd
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 import requests
 
 
@@ -75,7 +80,7 @@ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB default
 
 
 # ----------------------------
-# Preise DB helpers (exact schema, no metadata)
+# Preise DB helpers (exact schema, no metadata) + Synonyms overlay
 # ----------------------------
 def get_pricing_db() -> sqlite3.Connection:
     conn = sqlite3.connect(PRICING_DB_PATH)
@@ -87,6 +92,32 @@ def pricing_table_exists(conn: sqlite3.Connection) -> bool:
     cur = conn.cursor()
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='preise'")
     return cur.fetchone() is not None
+
+
+def synonyms_table_exists(conn: sqlite3.Connection) -> bool:
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='synonyms'")
+    return cur.fetchone() is not None
+
+
+def ensure_synonyms_table(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS "synonyms" (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          Customer TEXT NOT NULL,
+          Name TEXT NOT NULL,          -- base name from Preise
+          Synonyms TEXT NOT NULL,      -- alias to expose
+          match_score REAL,            -- 0..100
+          created_at TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_syn_customer ON synonyms(Customer)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_syn_customer_syn ON synonyms(Customer, Synonyms)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_syn_customer_name ON synonyms(Customer, Name)")
+    conn.commit()
 
 
 def drop_pricing_table(conn: sqlite3.Connection) -> None:
@@ -118,9 +149,157 @@ def insert_pricing_rows(conn: sqlite3.Connection, headers: list[str], rows: list
     return cur.rowcount or 0
 
 
+def get_preise_columns(conn: sqlite3.Connection) -> list[str]:
+    cur = conn.cursor()
+    cur.execute('PRAGMA table_info("preise")')
+    return [row[1] for row in cur.fetchall()]
+
+
+def get_kunde_col_from_cols(cols: list[str]) -> str | None:
+    for c in cols:
+        if c == "Kunde_Name":
+            return c
+    for c in cols:
+        if str(c).strip().lower() == "kunde_name":
+            return c
+    return None
+
+
+def get_productname_col_from_cols(cols: list[str]) -> str | None:
+    # Prefer exact 'Produktname'
+    for c in cols:
+        if c == "Produktname":
+            return c
+    # Fallback case-insensitive trimmed match
+    for c in cols:
+        if str(c).strip().lower() == "produktname":
+            return c
+    # As an absolute fallback, accept 'Name'
+    for c in cols:
+        if c == "Name" or str(c).strip().lower() == "name":
+            return c
+    return None
+
+
+def delete_s_rows_for_customers(conn: sqlite3.Connection, customers: list[str]) -> int:
+    if not customers:
+        return 0
+    cols = get_preise_columns(conn)
+    kunde_col = get_kunde_col_from_cols(cols)
+    if not kunde_col or "record_source" not in cols:
+        return 0
+    q = ",".join(["?"] * len(customers))
+    cur = conn.cursor()
+    cur.execute(
+        f'DELETE FROM {_quote_ident("preise")} WHERE {_quote_ident("record_source")} = ? AND {_quote_ident(kunde_col)} IN ({q})',
+        ["S", *customers]
+    )
+    conn.commit()
+    return cur.rowcount or 0
+
+
+def insert_row_dict(conn: sqlite3.Connection, row_obj: dict) -> None:
+    cols = list(row_obj.keys())
+    placeholders = ", ".join(["?"] * len(cols))
+    cols_sql = ", ".join([_quote_ident(c) for c in cols])
+    sql = f'INSERT INTO {_quote_ident("preise")} ({cols_sql}) VALUES ({placeholders})'
+    cur = conn.cursor()
+    cur.execute(sql, [row_obj.get(c) for c in cols])
+    conn.commit()
+
+
+def rebuild_synonyms_into_preise(conn: sqlite3.Connection, customers_scope: list[str] | None = None, threshold: float = 85.0) -> dict:
+    # Rebuild S duplicates into preise using stored definitions in synonyms table, matching against current P rows
+    ensure_synonyms_table(conn)
+    cols = get_preise_columns(conn)
+    kunde_col = get_kunde_col_from_cols(cols)
+    name_col = get_productname_col_from_cols(cols)
+    if not kunde_col or not name_col:
+        return {"inserted": 0, "unmatched": 0}
+
+    # Fetch definitions in scope
+    cur = conn.cursor()
+    if customers_scope:
+        q = ",".join(["?"] * len(customers_scope))
+        cur.execute(f'SELECT Customer, Name, Synonyms FROM "synonyms" WHERE Customer IN ({q})', customers_scope)
+    else:
+        cur.execute('SELECT Customer, Name, Synonyms FROM "synonyms"')
+    defs = cur.fetchall()
+
+    inserted = 0
+    unmatched = 0
+    # Build column set for copy
+    for d in defs:
+        cust = str(d[0] or "").strip()
+        base = str(d[1] or "").strip()
+        alias = str(d[2] or "").strip()
+        if not cust or not base or not alias:
+            continue
+        # Find best match within P rows for this customer
+        cur.execute(
+            f'SELECT * FROM {_quote_ident("preise")} WHERE {_quote_ident(kunde_col)} = ? AND {_quote_ident("record_source")} = ?'
+            , (cust, "P")
+        )
+        base_rows = [dict(row) for row in cur.fetchall()]
+        best_row, best_score = _best_match_base_row(base, base_rows, name_col)
+        if best_row is None or best_score < threshold:
+            # Second pass relaxed
+            rthr = get_relaxed_threshold()
+            best_row, best_score = _best_match_base_row_relaxed(base, base_rows, name_col)
+            if best_row is None or best_score < rthr:
+                unmatched += 1
+                continue
+        # Duplicate row: copy all columns, change product name, set record_source='S'
+        dup = {c: best_row.get(c) for c in cols}
+        dup[name_col] = alias
+        if "record_source" in cols:
+            dup["record_source"] = "S"
+        else:
+            # If column not present, skip (schema mismatch)
+            continue
+        insert_row_dict(conn, dup)
+        inserted += 1
+    return {"inserted": inserted, "unmatched": unmatched}
+
+
+def get_match_threshold() -> float:
+    try:
+        val = float(os.getenv("MATCH_THRESHOLD") or 80)
+    except Exception:
+        val = 80.0
+    # Clamp sensible bounds
+    if val < 0:
+        val = 0.0
+    if val > 100:
+        val = 100.0
+    return val
+
+
+def get_relaxed_threshold() -> float:
+    try:
+        val = float(os.getenv("MATCH_THRESHOLD_RELAXED") or (get_match_threshold() - 10))
+    except Exception:
+        val = max(get_match_threshold() - 10.0, 0.0)
+    if val < 0:
+        val = 0.0
+    if val > 100:
+        val = 100.0
+    return val
+
+
 def init_db() -> None:
     # Nothing to initialize for pricing DB beyond file existence; table is recreated on import
     os.makedirs(UPLOAD_DIR, exist_ok=True)
+    try:
+        pconn = get_pricing_db()
+        ensure_synonyms_table(pconn)
+    except Exception:
+        pass
+    finally:
+        try:
+            pconn.close()
+        except Exception:
+            pass
     # Initialize invoices DB (metadata table)
     try:
         conn = sqlite3.connect(INVOICES_DB_PATH)
@@ -322,6 +501,39 @@ def fetch_rows_for_kunde(conn: sqlite3.Connection, kunde_name: str) -> list[dict
             obj[h] = row[i]
         result.append(obj)
     return result
+
+
+def fetch_synonyms_for_customer(conn: sqlite3.Connection, customer: str) -> list[sqlite3.Row]:
+    ensure_synonyms_table(conn)
+    cur = conn.cursor()
+    cur.execute('SELECT id, Customer, Name, Synonyms, match_score, created_at FROM "synonyms" WHERE Customer = ?', (customer,))
+    rows = cur.fetchall()
+    return rows
+
+
+def clear_synonyms_for_customers(conn: sqlite3.Connection, customers: list[str]) -> int:
+    if not customers:
+        return 0
+    ensure_synonyms_table(conn)
+    cur = conn.cursor()
+    q = ",".join(["?"] * len(customers))
+    cur.execute(f'DELETE FROM "synonyms" WHERE Customer IN ({q})', customers)
+    conn.commit()
+    return cur.rowcount or 0
+
+
+def insert_synonym_rows(conn: sqlite3.Connection, rows: list[tuple[str, str, str, float, str]]) -> int:
+    # rows: (Customer, Name, Synonyms, match_score, created_at)
+    if not rows:
+        return 0
+    ensure_synonyms_table(conn)
+    cur = conn.cursor()
+    cur.executemany(
+        'INSERT INTO "synonyms" (Customer, Name, Synonyms, match_score, created_at) VALUES (?, ?, ?, ?, ?)',
+        rows,
+    )
+    conn.commit()
+    return cur.rowcount or 0
 
 
 # ----------------------------
@@ -526,6 +738,37 @@ def feeddata_get():
     return render_template("feeddata.html")
 
 
+@app.get("/preise/download")
+@login_required
+def preise_download():
+    # Export the entire current Preise table (all columns, all rows) to XLSX
+    try:
+        pconn = get_pricing_db()
+        if not pricing_table_exists(pconn):
+            pconn.close()
+            return "No pricing data", 404
+        cur = pconn.cursor()
+        cur.execute('PRAGMA table_info("preise")')
+        cols = [row[1] for row in cur.fetchall()]
+        if not cols:
+            pconn.close()
+            return "No pricing data", 404
+        qcols = ", ".join([_quote_ident(c) for c in cols])
+        cur.execute(f'SELECT {qcols} FROM {_quote_ident("preise")}')
+        rows = cur.fetchall()
+        pconn.close()
+
+        # Build DataFrame and write to a temp file
+        data = [[r[c] for c in cols] for r in rows]
+        df = pd.DataFrame(data, columns=cols)
+        tmp_xlsx = os.path.join(DOWNLOAD_TMP_DIR, f"preise_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx")
+        with pd.ExcelWriter(tmp_xlsx, engine='xlsxwriter') as writer:
+            df.to_excel(writer, index=False, sheet_name='Preise')
+        return send_file(tmp_xlsx, as_attachment=True, download_name='preise_latest.xlsx', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.post("/feeddata")
 @login_required
 def feeddata_post():
@@ -565,15 +808,27 @@ def feeddata_post():
         # Sanity check: ensure 'Kunde_Name' column exists after our duplicate-resolution logic
         if not any((h == "Kunde_Name" or str(h).strip().lower() == "kunde_name") for h in headers):
             raise ValueError("'Kunde_Name' column not found in header row.")
-        # Create table and insert (full overwrite)
+        # Add record_source column to headers and set 'P' for all imported rows
+        if not any(h == "record_source" for h in headers):
+            headers = list(headers) + ["record_source"]
+            rows = [list(r) + ["P"] for r in rows]
+
+        # Create table and insert (full overwrite of P+S, but we will rebuild S right after)
         pconn = get_pricing_db()
         drop_pricing_table(pconn)
         create_pricing_table(pconn, headers)
         inserted = insert_pricing_rows(pconn, headers, rows)
-        pconn.close()
 
-        flash(f"Preise sheet imported with {inserted} rows.", "success")
-        return redirect(url_for("invoicecreation_get"))
+        # Reapply synonyms definitions into the freshly imported table as S rows
+        try:
+            stats = rebuild_synonyms_into_preise(pconn, customers_scope=None, threshold=get_match_threshold())
+        except Exception:
+            stats = {"inserted": 0, "unmatched": 0}
+        finally:
+            pconn.close()
+
+        flash(f"Preise sheet imported with {inserted} rows. Synonyms added: {stats.get('inserted',0)}.", "success")
+        return redirect(url_for("feeddata_get"))
 
     except Exception as e:
         flash(tr("flash_import_error", error=str(e)), "error")
@@ -603,12 +858,42 @@ def invoicecreation_get():
 
 
 def build_pricing_json_for_client(client_name: str) -> list[dict]:
-    # For compatibility if called elsewhere: return exact rows from Preise DB
+    # Build combined P + S rows for the client
     pconn = get_pricing_db()
     try:
         if not pricing_table_exists(pconn):
             return []
-        return fetch_rows_for_kunde(pconn, client_name)
+        base_rows = fetch_rows_for_kunde(pconn, client_name)
+        # Determine the product name column
+        name_col = None
+        if base_rows:
+            for k in base_rows[0].keys():
+                if k == "Name" or str(k).strip().lower() == "name":
+                    name_col = k
+                    break
+        # Start with all P rows as-is (no extra fields to keep payload stable)
+        out: list[dict] = [dict(r) for r in base_rows]
+        # Produce S duplicates from synonyms table if we can resolve name column
+        if name_col:
+            syn_rows = fetch_synonyms_for_customer(pconn, client_name)
+            # Map base name -> list of base rows (handle possible duplicates)
+            from collections import defaultdict
+            base_map: dict[str, list[dict]] = defaultdict(list)
+            for r in base_rows:
+                key = str(r.get(name_col) or "").strip()
+                if key:
+                    base_map[key].append(r)
+            for s in syn_rows:
+                base_name = str(s["Name"] or "").strip()
+                alias_name = str(s["Synonyms"] or "").strip()
+                if not alias_name:
+                    continue
+                bases = base_map.get(base_name) or []
+                for b in bases:
+                    dup = dict(b)
+                    dup[name_col] = alias_name
+                    out.append(dup)
+        return out
     finally:
         pconn.close()
 
@@ -707,13 +992,13 @@ def api_generate_invoice():
     if not WEBHOOK_URL:
         return jsonify({"error": tr("webhook_not_set")}), 400
 
-    # Build exact-key array from Preise table filtered by Kunde_Name
+    # Build exact-key array from Preise table filtered by Kunde_Name (augmented with synonyms)
     try:
         pconn = get_pricing_db()
         if not pricing_table_exists(pconn):
             pconn.close()
             return jsonify({"error": "no pricing data"}), 400
-        rows = fetch_rows_for_kunde(pconn, client_name)
+        rows = build_pricing_json_for_client(client_name)
         pconn.close()
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -832,6 +1117,276 @@ def api_generate_invoice():
         })
     except Exception as e:
         return jsonify({"error": tr("flash_webhook_send_error", error=str(e))}), 500
+
+
+def _normalize_text(s: str) -> str:
+    # Lowercase, trim, remove diacritics, collapse whitespace and punctuation
+    import unicodedata
+    s = (s or "").strip().lower()
+    # Normalize and strip accents
+    s = unicodedata.normalize('NFKD', s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.replace("ß", "ss")
+    # Normalize simple fraction patterns like 1_1 or 1-1 to 1/1 before punctuation handling
+    import re
+    s = re.sub(r"(\d)[_\-](\d)", r"\1/\2", s)
+    # Replace separators/punct with spaces (preserve '/' to keep fractions like 1/4 intact)
+    for ch in [",", ";", ":", ".", "(", ")", "[", "]", "{", "}", "\\", "-", "_", "+", "*", "|", "~", "!", "?", "'", '"']:
+        s = s.replace(ch, " ")
+    # Collapse whitespace
+    s = " ".join(s.split())
+    # German transliterations already handled via diacritic strip + ß→ss; also map umlaut spellings
+    s = s.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
+    return s
+
+
+def _fuzzy_ratio(a: str, b: str) -> float:
+    # Lightweight ratio 0..100 using difflib
+    import difflib
+    return round(difflib.SequenceMatcher(None, _normalize_text(a), _normalize_text(b)).ratio() * 100, 2)
+
+
+def _tokenize(s: str) -> set[str]:
+    txt = _normalize_text(s)
+    # Lightweight token synonym map (domain-aware)
+    token_map = {
+        "laib": "wheel",
+        "rad": "wheel",
+        "wheel": "wheel",
+        "meule": "wheel",
+        "kart": "karton",
+        "karton": "karton",
+        "kartonage": "karton",
+        "keil": "wedge",
+        "wedge": "wedge",
+        "bloc": "block",
+        "blocs": "block",
+        "block": "block",
+        "eckig": "square",
+        "square": "square",
+        "rund": "wheel",
+        "mild-wurzig": "mildwurzig",
+        "mild-würzig": "mildwurzig",
+        "mildwurzig": "mildwurzig",
+        "doux": "mild",
+        "reserve": "reserve",
+        "alpage": "alpage",
+        "mois": "months",
+        "monat": "months",
+        "monate": "months",
+        "mte": "months",
+        "mt": "months",
+        "portion": "portion",
+        "portions": "portion",
+        "rouleaux": "rolls",
+        "rouleau": "rolls",
+        "rolls": "rolls",
+    }
+    tokens = []
+    for t in txt.split():
+        t2 = token_map.get(t, t)
+        tokens.append(t2)
+    tokens = set(tokens)
+    # Drop very short tokens and common packaging/unit stopwords
+    stop = {
+        "kg", "g", "gr", "gram", "stk", "st", "pc", "pcs", "pk", "pack", "ml", "l", "x", "a", "à", "per",
+        "karton", "box", "tray", "case",
+        "bio", "aop", "igp",
+    }
+    return {t for t in tokens if len(t) > 1 and t not in stop}
+
+
+def _token_set_score(a: str, b: str) -> float:
+    ta, tb = _tokenize(a), _tokenize(b)
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    score = (2 * inter) / (len(ta) + len(tb))
+    return round(score * 100, 2)
+
+
+def _trigram_jaccard(a: str, b: str) -> float:
+    def grams(s: str) -> set[str]:
+        t = _normalize_text(s).replace(" ", "")
+        if len(t) < 3:
+            return {t} if t else set()
+        return {t[i:i+3] for i in range(len(t)-2)}
+    ga, gb = grams(a), grams(b)
+    if not ga or not gb:
+        return 0.0
+    inter = len(ga & gb)
+    uni = len(ga | gb)
+    return round((inter / uni) * 100, 2)
+
+
+def _best_match_base_row(base_name: str, base_rows: list[dict], name_col: str) -> tuple[dict | None, float]:
+    # Anchor-based blocking: require at least one shared token if possible
+    base_tokens = _tokenize(base_name)
+    best = None
+    best_score = -1.0
+    for r in base_rows:
+        cand = str(r.get(name_col) or "")
+        if not cand:
+            continue
+        cand_tokens = _tokenize(cand)
+        shares_anchor = bool(base_tokens & cand_tokens)
+        s1 = _fuzzy_ratio(base_name, cand)
+        s2 = _token_set_score(base_name, cand)
+        s3 = _trigram_jaccard(base_name, cand)
+        try:
+            # Optional Jaro-Winkler via jellyfish if available
+            import jellyfish
+            s4 = round(jellyfish.jaro_winkler_similarity(_normalize_text(base_name), _normalize_text(cand)) * 100, 2)
+        except Exception:
+            s4 = 0.0
+        # Choose the best across metrics
+        score = max(s1, s2, s3, s4)
+        # Slightly penalize if no shared anchor tokens
+        if not shares_anchor:
+            score = score * 0.9
+        if score > best_score:
+            best_score = score
+            best = r
+    return best, best_score
+
+
+def _best_match_base_row_relaxed(base_name: str, base_rows: list[dict], name_col: str) -> tuple[dict | None, float]:
+    # Relaxed: no anchor token penalty; emphasize JW and trigram
+    best = None
+    best_score = -1.0
+    for r in base_rows:
+        cand = str(r.get(name_col) or "")
+        if not cand:
+            continue
+        s1 = _fuzzy_ratio(base_name, cand)
+        s2 = _token_set_score(base_name, cand)
+        s3 = _trigram_jaccard(base_name, cand)
+        try:
+            import jellyfish
+            s4 = round(jellyfish.jaro_winkler_similarity(_normalize_text(base_name), _normalize_text(cand)) * 100, 2)
+        except Exception:
+            s4 = 0.0
+        # Substring containment boost for cross-language/format variants
+        bn = _normalize_text(base_name)
+        cn = _normalize_text(cand)
+        contain = (bn in cn) or (cn in bn)
+        score = max(s1, s2, s3, s4)
+        if contain and s2 >= 60.0:
+            score = max(score, 90.0)
+        if score > best_score:
+            best_score = score
+            best = r
+    return best, best_score
+
+
+@app.post("/synonyms/upload")
+@login_required
+def synonyms_upload():
+    if "file" not in request.files:
+        return jsonify({"error": tr("flash_missing_file")}), 400
+    excel_file = request.files["file"]
+    filename = secure_filename(excel_file.filename or "")
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_EXCEL_EXTENSIONS:
+        return jsonify({"error": tr("flash_excel_only")}), 400
+
+    temp_path = os.path.join(UPLOAD_DIR, filename)
+    excel_file.save(temp_path)
+
+    threshold = get_match_threshold()
+    deleted_total = 0
+    inserted_total = 0
+    unmatched_total = 0
+    customers_in_file: set[str] = set()
+
+    try:
+        df = pd.read_excel(temp_path, dtype=object)
+        # Expect columns: Customer, Name, Synonyms (case-insensitive, trimmed)
+        colmap = {}
+        for c in df.columns:
+            key = str(c).strip()
+            low = key.lower()
+            if low == "customer":
+                colmap["Customer"] = c
+            elif low == "name":
+                colmap["Name"] = c
+            elif low == "synonyms" or low == "synonym":
+                colmap["Synonyms"] = c
+        missing = [k for k in ("Customer", "Name", "Synonyms") if k not in colmap]
+        if missing:
+            return jsonify({"error": f"Missing required columns: {', '.join(missing)}"}), 400
+
+        # Collect rows
+        syn_input: list[tuple[str, str, str]] = []  # (Customer, Name, Synonyms)
+        for _, r in df.iterrows():
+            cust = str(r[colmap["Customer"]]).strip() if pd.notna(r[colmap["Customer"]]) else ""
+            base = str(r[colmap["Name"]]).strip() if pd.notna(r[colmap["Name"]]) else ""
+            alias = str(r[colmap["Synonyms"]]).strip() if pd.notna(r[colmap["Synonyms"]]) else ""
+            if not cust or not base or not alias:
+                continue
+            syn_input.append((cust, base, alias))
+            customers_in_file.add(cust)
+
+        pconn = get_pricing_db()
+        try:
+            ensure_synonyms_table(pconn)
+            # Delete S rows from Preise for customers in file
+            deleted_total = delete_s_rows_for_customers(pconn, sorted(customers_in_file))
+
+            # Also clear and re-store definitions for those customers
+            _ = clear_synonyms_for_customers(pconn, sorted(customers_in_file))
+
+            now_iso = datetime.utcnow().isoformat() + "Z"
+            batch_defs: list[tuple[str, str, str, float, str]] = []
+
+            # We will simultaneously rebuild S rows into Preise using the same matching as rebuild_synonyms_into_preise
+            cols = get_preise_columns(pconn)
+            kunde_col = get_kunde_col_from_cols(cols)
+            name_col = get_productname_col_from_cols(cols)
+            if not kunde_col or not name_col:
+                return jsonify({"error": "Preise table missing Kunde_Name or Produktname."}), 400
+
+            # Cache P rows per customer
+            from collections import defaultdict
+            cache_base_rows: dict[str, list[dict]] = {}
+            for cust in customers_in_file:
+                cache_base_rows[cust] = [r for r in fetch_rows_for_kunde(pconn, cust) if True]
+
+            for cust, base, alias in syn_input:
+                base_rows = cache_base_rows.get(cust, [])
+                if not base_rows:
+                    unmatched_total += 1
+                    continue
+                best_row, best_score = _best_match_base_row(base, base_rows, name_col)
+                if best_row is None or best_score < threshold:
+                    # Second pass relaxed
+                    rthr = get_relaxed_threshold()
+                    best_row, best_score = _best_match_base_row_relaxed(base, base_rows, name_col)
+                    if best_row is None or best_score < rthr:
+                        unmatched_total += 1
+                        continue
+                # Save definition
+                batch_defs.append((cust, str(best_row.get(name_col) or ""), alias, float(best_score), now_iso))
+                # Insert duplicate S row into Preise
+                dup = dict(best_row)
+                dup[name_col] = alias
+                dup["record_source"] = "S"
+                insert_row_dict(pconn, dup)
+
+            inserted_total = insert_synonym_rows(pconn, batch_defs)
+        finally:
+            pconn.close()
+
+        flash(f"Synonyms imported for {len(customers_in_file)} customers. Added: {int(inserted_total)}, unmatched: {int(unmatched_total)}.", "success")
+        return redirect(url_for("feeddata_get"))
+    except Exception as e:
+        flash(str(e), "error")
+        return redirect(url_for("feeddata_get"))
+    finally:
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
 
 
 @app.get("/api/invoices/check-name")
