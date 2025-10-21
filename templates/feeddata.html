@@ -13,17 +13,17 @@
   </form>
 
   <form method="post" action="{{ url_for('synonyms_upload') }}" enctype="multipart/form-data" style="margin-top:16px;">
-    {% call ui.card(title='Upload synonym sheet') %}
-      {% call ui.field('Excel (.xlsx / .xlsm / .xls)', 'syn_file') %}
+    {% call ui.card(title=t('syn_upload_title')) %}
+      {% call ui.field(t('syn_excel_label'), 'syn_file') %}
         <input type="file" id="syn_file" name="file" accept=".xlsx,.xlsm,.xls" required>
       {% endcall %}
-      <p class="hint">Full-replace S data for customers present in this file.</p>
-      {{ ui.button('Import Synonyms') }}
+      <p class="hint">{{ t('syn_overwrite_hint') }}</p>
+      {{ ui.button(t('syn_import_button')) }}
     {% endcall %}
   </form>
 
   <div style="margin-top:16px;">
-    <a class="btn" href="{{ url_for('preise_download') }}">Download current price sheet (XLSX)</a>
+    <a class="btn" href="{{ url_for('preise_download') }}">{{ t('download_preise') }}</a>
   </div>
 {% endblock %}
 

@@ -16,12 +16,12 @@
         <div id="invoice_name_hint" style="margin-top:6px; font-size:0.9em; display:none;"></div>
         <div id="invoice_name_suggestions" style="margin-top:4px; display:none;"></div>
       {% endcall %}
-      {% call ui.field('Title', 'titleInvoice') %}
-        <input type="text" id="titleInvoice" name="titleInvoice" placeholder="e.g., November 2025 Sales Summary" maxlength="1000" style="width:100%;">
+      {% call ui.field(t('title_label'), 'titleInvoice') %}
+        <input type="text" id="titleInvoice" name="titleInvoice" placeholder="{{ t('title_placeholder') }}" maxlength="1000" style="width:100%;">
         <div id="titleInvoice_hint" style="margin-top:6px; font-size:0.9em; color:#666;"></div>
       {% endcall %}
-      {% call ui.field('Header', 'headerInvoice') %}
-        <textarea id="headerInvoice" name="headerInvoice" rows="5" placeholder="Paste or write the header paragraph here" style="width:100%; resize:vertical; max-height:220px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
+      {% call ui.field(t('header_label'), 'headerInvoice') %}
+        <textarea id="headerInvoice" name="headerInvoice" rows="5" placeholder="{{ t('header_placeholder') }}" style="width:100%; resize:vertical; max-height:220px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
       {% endcall %}
       {% call ui.field(t('delivery_label'), 'delivery_notes') %}
         <input type="file" id="delivery_notes" name="delivery_notes" accept=".pdf" multiple>
@@ -205,7 +205,7 @@
       // 30 seconds per PDF + 30 seconds buffer
       let seconds = (count * 30) + 30;
       if(seconds < 30) seconds = 30; // minimum display window
-      const label = 'Estimated time remaining:';
+      const label = "{{ t('eta_label') }}";
       const updateView = () => {
         etaMsg.textContent = `${label} ${formatMMSS(seconds)}`;
       };
@@ -268,14 +268,14 @@
       if(!invoiceNameHint) return;
       invoiceNameHint.style.display = 'block';
       invoiceNameHint.style.color = '#0a7f2e';
-      invoiceNameHint.textContent = 'Name available';
+      invoiceNameHint.textContent = "{{ t('name_available') }}";
     }
 
     function setNameHintTaken(){
       if(!invoiceNameHint) return;
       invoiceNameHint.style.display = 'block';
       invoiceNameHint.style.color = '#a31212';
-      invoiceNameHint.textContent = 'Invoice with this name already exists. Try adding a date (e.g., 20251014) or a number.';
+      invoiceNameHint.textContent = "{{ t('name_taken') }}";
     }
 
     function clearNameHint(){
@@ -359,7 +359,7 @@
         const resp = await fetch(invoiceForm.action, { method: 'POST', body: fd });
         const data = await resp.json().catch(() => ({}));
         if(!resp.ok){
-          alert(data.error || 'Request failed');
+          alert(data.error || "{{ t('request_failed') }}");
           return;
         }
         // Update invoice name if not set
@@ -374,7 +374,7 @@
             </div>
           </div>`;
       } catch(err){
-        alert(err?.message || 'Error');
+        alert(err?.message || "{{ t('error_generic') }}");
       } finally {
         setLoading(false);
       }
