@@ -66,7 +66,8 @@ try:
     WEBHOOK_TIMEOUT_MIN = int(_timeout_min_raw) if _timeout_min_raw else 5
 except Exception:
     WEBHOOK_TIMEOUT_MIN = 5
-if WEBHOOK_TIMEOUT_MIN <= 0:
+INFINITE_WEBHOOK_TIMEOUT = (WEBHOOK_TIMEOUT_MIN == 0)
+if WEBHOOK_TIMEOUT_MIN < 0:
     WEBHOOK_TIMEOUT_MIN = 5
 WEBHOOK_CONNECT_TIMEOUT_SEC = 30
 WEBHOOK_READ_TIMEOUT_SEC = WEBHOOK_TIMEOUT_MIN * 60
@@ -1092,15 +1093,15 @@ def api_generate_invoice():
 
     try:
         # Separate connect/read timeouts to allow longer processing on n8n
-        resp = requests.post(
-            WEBHOOK_URL,
-            data=data_fields,
-            files=file_parts,
-            timeout=(WEBHOOK_CONNECT_TIMEOUT_SEC, WEBHOOK_READ_TIMEOUT_SEC),
-        )
+        timeout_arg = None if INFINITE_WEBHOOK_TIMEOUT else (WEBHOOK_CONNECT_TIMEOUT_SEC, WEBHOOK_READ_TIMEOUT_SEC)
+        resp = requests.post(WEBHOOK_URL, data=data_fields, files=file_parts, timeout=timeout_arg)
         ok = 200 <= resp.status_code < 300
-        if not ok:
-            return jsonify({"error": tr("flash_webhook_fail", status=resp.status_code)}), 502
+        # Validate non-empty PDF
+        content = resp.content or b""
+        looks_pdf = (len(content) > 0 and content[:4] == b"%PDF")
+        if not ok or not looks_pdf:
+            msg = tr("flash_webhook_fail", status=resp.status_code) if not ok else "Invalid or empty PDF returned"
+            return jsonify({"error": msg}), 502
 
         # Determine filename from response headers or fallback
         disp = resp.headers.get("Content-Disposition", "")

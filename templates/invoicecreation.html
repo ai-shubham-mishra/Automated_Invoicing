@@ -202,9 +202,8 @@
       if(etaInterval){ clearInterval(etaInterval); etaInterval = null; }
       const files = deliveryNotesInput && deliveryNotesInput.files ? deliveryNotesInput.files : null;
       const count = files ? files.length : 0;
-      // 30 seconds per PDF + 30 seconds buffer
-      let seconds = (count * 30) + 30;
-      if(seconds < 30) seconds = 30; // minimum display window
+      // Count up: elapsed time from request start until response
+      let seconds = 0;
       const label = "{{ t('eta_label') }}";
       const updateView = () => {
         etaMsg.textContent = `${label} ${formatMMSS(seconds)}`;
@@ -212,14 +211,7 @@
       etaMsg.style.display = 'block';
       updateView();
       etaInterval = setInterval(() => {
-        seconds -= 1;
-        if(seconds <= 0){
-          seconds = 0;
-          updateView();
-          clearInterval(etaInterval);
-          etaInterval = null;
-          return;
-        }
+        seconds += 1;
         updateView();
       }, 1000);
     }
