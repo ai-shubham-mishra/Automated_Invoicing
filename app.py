@@ -595,7 +595,7 @@ TRANSLATIONS = {
         "title_placeholder": "e.g., November 2025 Sales Summary",
         "header_label": "Header",
         "header_placeholder": "Paste or write the header paragraph here",
-        "eta_label": "Estimated time remaining:",
+        "eta_label": "Time elapsed:",
         "name_available": "Name available",
         "name_taken": "Invoice with this name already exists. Try adding a date (e.g., 20251014) or a number.",
         "request_failed": "Request failed",
