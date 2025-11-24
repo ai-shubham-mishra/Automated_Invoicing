@@ -1,0 +1,395 @@
+{% extends 'base.html' %}
+{% import '_components.html' as ui %}
+{% block content %}
+  <style>
+    .notification {
+      padding: 12px 20px;
+      margin-bottom: 16px;
+      border-radius: 8px;
+      display: none;
+      animation: slideDown 0.3s ease;
+    }
+    .notification.success {
+      background: #0a7f2e;
+      color: #fff;
+      border-left: 4px solid #0a5f1e;
+    }
+    .notification.error {
+      background: #a31212;
+      color: #fff;
+      border-left: 4px solid #7f0e0e;
+    }
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+  <h1>{{ t('client_headers_title') }}</h1>
+
+  <!-- Notification Area -->
+  <div id="notification" class="notification"></div>
+
+  <!-- Tabs for Header and Footer -->
+  <div style="margin-bottom: 24px; border-bottom: 2px solid #444;">
+    <button id="tab-header" class="tab-btn active" style="padding: 12px 24px; background: none; border: none; color: #fff; cursor: pointer; border-bottom: 3px solid transparent;">
+      {{ t('client_headers_tab_header') }}
+    </button>
+    <button id="tab-footer" class="tab-btn" style="padding: 12px 24px; background: none; border: none; color: #fff; cursor: pointer; border-bottom: 3px solid transparent;">
+      {{ t('client_headers_tab_footer') }}
+    </button>
+  </div>
+
+  <!-- Header Tab Content -->
+  <div id="content-header" class="tab-content">
+    <form id="header_form">
+      {% call ui.card() %}
+        {% call ui.field(t('client_headers_select_client'), 'client_name_header') %}
+          <div class="combo" style="position:relative;">
+            <input type="text" id="combo_input_header" placeholder="{{ t('search_placeholder') }}" autocomplete="off">
+            <input type="hidden" id="client_name_header" name="client_name" required>
+            <div id="combo_list_header" class="combo-list" style="position:absolute; z-index:10; width:100%; max-height:220px; overflow:auto; display:none;"></div>
+          </div>
+        {% endcall %}
+        {% call ui.field(t('client_headers_default_header'), 'default_header') %}
+          <textarea id="default_header" name="default_header" rows="8" placeholder="{{ t('client_headers_placeholder') }}" style="width:100%; resize:vertical; max-height:300px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
+        {% endcall %}
+        <div style="display:flex; gap:8px;">
+          {{ ui.button(t('client_headers_save'), attrs='id="save_header_btn" type="submit"') }}
+          <button type="button" id="clear_header_btn" class="btn">{{ t('client_headers_clear') }}</button>
+        </div>
+      {% endcall %}
+    </form>
+  </div>
+
+  <!-- Footer Tab Content -->
+  <div id="content-footer" class="tab-content" style="display:none;">
+    <form id="footer_form">
+      {% call ui.card() %}
+        {% call ui.field(t('client_headers_select_client'), 'client_name_footer') %}
+          <div class="combo" style="position:relative;">
+            <input type="text" id="combo_input_footer" placeholder="{{ t('search_placeholder') }}" autocomplete="off">
+            <input type="hidden" id="client_name_footer" name="client_name" required>
+            <div id="combo_list_footer" class="combo-list" style="position:absolute; z-index:10; width:100%; max-height:220px; overflow:auto; display:none;"></div>
+          </div>
+        {% endcall %}
+        {% call ui.field(t('client_headers_default_footer'), 'default_footer') %}
+          <textarea id="default_footer" name="default_footer" rows="8" placeholder="{{ t('client_footers_placeholder') }}" style="width:100%; resize:vertical; max-height:300px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
+        {% endcall %}
+        <div style="display:flex; gap:8px;">
+          {{ ui.button(t('client_footers_save'), attrs='id="save_footer_btn" type="submit"') }}
+          <button type="button" id="clear_footer_btn" class="btn">{{ t('client_headers_clear') }}</button>
+        </div>
+      {% endcall %}
+    </form>
+  </div>
+
+  <style>
+    .tab-btn.active {
+      border-bottom-color: #4a9eff !important;
+      font-weight: bold;
+    }
+    .tab-btn:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+  </style>
+
+  <script>
+    // Tab switching logic
+    const tabHeader = document.getElementById('tab-header');
+    const tabFooter = document.getElementById('tab-footer');
+    const contentHeader = document.getElementById('content-header');
+    const contentFooter = document.getElementById('content-footer');
+
+    function showTab(tab) {
+      if (tab === 'header') {
+        tabHeader.classList.add('active');
+        tabFooter.classList.remove('active');
+        contentHeader.style.display = 'block';
+        contentFooter.style.display = 'none';
+      } else {
+        tabHeader.classList.remove('active');
+        tabFooter.classList.add('active');
+        contentHeader.style.display = 'none';
+        contentFooter.style.display = 'block';
+      }
+    }
+
+    tabHeader.addEventListener('click', () => showTab('header'));
+    tabFooter.addEventListener('click', () => showTab('footer'));
+
+    // Notification system
+    function showNotification(message, type = 'success') {
+      const notification = document.getElementById('notification');
+      notification.textContent = message;
+      notification.className = `notification ${type}`;
+      notification.style.display = 'block';
+      setTimeout(() => {
+        notification.style.display = 'none';
+      }, 5000);
+    }
+
+    // Header tab logic
+    const comboInputHeader = document.getElementById('combo_input_header');
+    const comboListHeader = document.getElementById('combo_list_header');
+    const hiddenInputHeader = document.getElementById('client_name_header');
+    const headerTextarea = document.getElementById('default_header');
+    const headerForm = document.getElementById('header_form');
+    const saveHeaderBtn = document.getElementById('save_header_btn');
+    const clearHeaderBtn = document.getElementById('clear_header_btn');
+
+    // Footer tab logic
+    const comboInputFooter = document.getElementById('combo_input_footer');
+    const comboListFooter = document.getElementById('combo_list_footer');
+    const hiddenInputFooter = document.getElementById('client_name_footer');
+    const footerTextarea = document.getElementById('default_footer');
+    const footerForm = document.getElementById('footer_form');
+    const saveFooterBtn = document.getElementById('save_footer_btn');
+    const clearFooterBtn = document.getElementById('clear_footer_btn');
+
+    let items = [];
+    let openHeader = false;
+    let openFooter = false;
+    let timer = null;
+
+    function openListHeader(){ comboListHeader.style.display = 'block'; openHeader = true; }
+    function closeListHeader(){ comboListHeader.style.display = 'none'; openHeader = false; }
+    function openListFooter(){ comboListFooter.style.display = 'block'; openFooter = true; }
+    function closeListFooter(){ comboListFooter.style.display = 'none'; openFooter = false; }
+
+    function renderList(filter, listEl, hiddenEl, onSelect){
+      listEl.innerHTML = '';
+      const q = (filter || '').toLowerCase();
+      const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const tokens = normalize(q).split(/\s+/).filter(Boolean);
+      const filtered = tokens.length ? items.filter(v => {
+        const s = normalize(v);
+        return tokens.every(t => s.includes(t));
+      }) : items;
+      if(filtered.length === 0){ 
+        if(listEl === comboListHeader) closeListHeader();
+        else closeListFooter();
+        return; 
+      }
+      filtered.forEach(v => {
+        const opt = document.createElement('div');
+        opt.textContent = v;
+        opt.className = 'combo-item';
+        opt.style.padding = '8px';
+        opt.style.cursor = 'pointer';
+        opt.addEventListener('mousedown', async () => {
+          onSelect(v);
+        });
+        listEl.appendChild(opt);
+      });
+    }
+
+    async function fetchCustomers(q){
+      const url = q ? (`/api/customers?q=` + encodeURIComponent(q)) : '/api/customers';
+      const resp = await fetch(url);
+      if(!resp.ok) return;
+      items = await resp.json();
+    }
+
+    async function fetchClientHeader(clientName){
+      if(!clientName) return;
+      try{
+        const resp = await fetch(`/api/client-headers/${encodeURIComponent(clientName)}`);
+        if(resp.ok){
+          const data = await resp.json();
+          if(data && data.default_header){
+            headerTextarea.value = data.default_header;
+          } else {
+            headerTextarea.value = '';
+          }
+        } else {
+          headerTextarea.value = '';
+        }
+      } catch(_e){
+        headerTextarea.value = '';
+      }
+    }
+
+    async function fetchClientFooter(clientName){
+      if(!clientName) return;
+      try{
+        const resp = await fetch(`/api/client-footers/${encodeURIComponent(clientName)}`);
+        if(resp.ok){
+          const data = await resp.json();
+          if(data && data.default_footer){
+            footerTextarea.value = data.default_footer;
+          } else {
+            footerTextarea.value = '';
+          }
+        } else {
+          footerTextarea.value = '';
+        }
+      } catch(_e){
+        footerTextarea.value = '';
+      }
+    }
+
+    // Header combo setup
+    comboInputHeader.addEventListener('input', () => {
+      hiddenInputHeader.value = '';
+      headerTextarea.value = '';
+      if(timer) clearTimeout(timer);
+      const q = comboInputHeader.value.trim();
+      timer = setTimeout(async () => {
+        await fetchCustomers(q);
+        renderList(q, comboListHeader, hiddenInputHeader, async (v) => {
+          comboInputHeader.value = v;
+          hiddenInputHeader.value = v;
+          closeListHeader();
+          await fetchClientHeader(v);
+        });
+      }, 250);
+      openListHeader();
+    });
+    comboInputHeader.addEventListener('click', () => {
+      if(comboListHeader.style.display === 'block'){ closeListHeader(); }
+      else { 
+        renderList(comboInputHeader.value.trim(), comboListHeader, hiddenInputHeader, async (v) => {
+          comboInputHeader.value = v;
+          hiddenInputHeader.value = v;
+          closeListHeader();
+          await fetchClientHeader(v);
+        });
+        openListHeader(); 
+      }
+    });
+    comboInputHeader.addEventListener('focus', async () => { 
+      await fetchCustomers(comboInputHeader.value.trim());
+      renderList(comboInputHeader.value.trim(), comboListHeader, hiddenInputHeader, async (v) => {
+        comboInputHeader.value = v;
+        hiddenInputHeader.value = v;
+        closeListHeader();
+        await fetchClientHeader(v);
+      });
+    });
+    comboInputHeader.addEventListener('blur', () => setTimeout(closeListHeader, 100));
+
+    // Footer combo setup
+    comboInputFooter.addEventListener('input', () => {
+      hiddenInputFooter.value = '';
+      footerTextarea.value = '';
+      if(timer) clearTimeout(timer);
+      const q = comboInputFooter.value.trim();
+      timer = setTimeout(async () => {
+        await fetchCustomers(q);
+        renderList(q, comboListFooter, hiddenInputFooter, async (v) => {
+          comboInputFooter.value = v;
+          hiddenInputFooter.value = v;
+          closeListFooter();
+          await fetchClientFooter(v);
+        });
+      }, 250);
+      openListFooter();
+    });
+    comboInputFooter.addEventListener('click', () => {
+      if(comboListFooter.style.display === 'block'){ closeListFooter(); }
+      else { 
+        renderList(comboInputFooter.value.trim(), comboListFooter, hiddenInputFooter, async (v) => {
+          comboInputFooter.value = v;
+          hiddenInputFooter.value = v;
+          closeListFooter();
+          await fetchClientFooter(v);
+        });
+        openListFooter(); 
+      }
+    });
+    comboInputFooter.addEventListener('focus', async () => { 
+      await fetchCustomers(comboInputFooter.value.trim());
+      renderList(comboInputFooter.value.trim(), comboListFooter, hiddenInputFooter, async (v) => {
+        comboInputFooter.value = v;
+        hiddenInputFooter.value = v;
+        closeListFooter();
+        await fetchClientFooter(v);
+      });
+    });
+    comboInputFooter.addEventListener('blur', () => setTimeout(closeListFooter, 100));
+
+    fetchCustomers('');
+
+    clearHeaderBtn.addEventListener('click', () => {
+      comboInputHeader.value = '';
+      hiddenInputHeader.value = '';
+      headerTextarea.value = '';
+    });
+
+    clearFooterBtn.addEventListener('click', () => {
+      comboInputFooter.value = '';
+      hiddenInputFooter.value = '';
+      footerTextarea.value = '';
+    });
+
+    headerForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const clientName = hiddenInputHeader.value.trim();
+      const headerText = headerTextarea.value.trim();
+      if(!clientName){
+        showNotification('Please select a client.', 'error');
+        return;
+      }
+      if(!headerText){
+        showNotification('Please enter a default header.', 'error');
+        return;
+      }
+      saveHeaderBtn.disabled = true;
+      try{
+        const resp = await fetch('/api/client-headers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_name: clientName, default_header: headerText })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if(resp.ok){
+          showNotification(`Header saved successfully for client '${clientName}'.`, 'success');
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          showNotification(data.error || 'Error saving header.', 'error');
+        }
+      } catch(err){
+        showNotification(err?.message || 'Error saving header.', 'error');
+      } finally {
+        saveHeaderBtn.disabled = false;
+      }
+    });
+
+    footerForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const clientName = hiddenInputFooter.value.trim();
+      const footerText = footerTextarea.value.trim();
+      if(!clientName){
+        showNotification('Please select a client.', 'error');
+        return;
+      }
+      if(!footerText){
+        showNotification('Please enter a default footer.', 'error');
+        return;
+      }
+      saveFooterBtn.disabled = true;
+      try{
+        const resp = await fetch('/api/client-footers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_name: clientName, default_footer: footerText })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if(resp.ok){
+          showNotification(`Footer saved successfully for client '${clientName}'.`, 'success');
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          showNotification(data.error || 'Error saving footer.', 'error');
+        }
+      } catch(err){
+        showNotification(err?.message || 'Error saving footer.', 'error');
+      } finally {
+        saveFooterBtn.disabled = false;
+      }
+    });
+  </script>
+{% endblock %}
+
+
+
+

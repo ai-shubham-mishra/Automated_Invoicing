@@ -15,6 +15,7 @@
           <a href="{{ url_for('feeddata_get') }}" class="tab {{ 'active' if request.path == url_for('feeddata_get') else '' }}">{{ t('feed_title') }}</a>
           <a href="{{ url_for('invoicecreation_get') }}" class="tab {{ 'active' if request.path == url_for('invoicecreation_get') else '' }}">{{ t('invoice_title') }}</a>
           <a href="{{ url_for('invoices_db_dashboard') }}" class="tab {{ 'active' if request.path == url_for('invoices_db_dashboard') else '' }}">{{ t('invoices') }}</a>
+          <a href="{{ url_for('clientheaders_get') }}" class="tab {{ 'active' if request.path == url_for('clientheaders_get') else '' }}">{{ t('nav_clientheaders') }}</a>
         </nav>
         <div class="lang-switch">
           <a href="{{ url_for('set_lang', lang='en') }}" class="{{ 'active' if lang == 'en' else '' }}">EN</a>

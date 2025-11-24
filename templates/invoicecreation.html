@@ -1,6 +1,23 @@
 {% extends 'base.html' %}
 {% import '_components.html' as ui %}
 {% block content %}
+  <style>
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin 0.6s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .btn.loading { opacity: 0.7; cursor: not-allowed; }
+  </style>
   <h1>{{ t('invoice_title') }}</h1>
   <form id="invoice_form" method="post" action="{{ url_for('api_generate_invoice') }}" enctype="multipart/form-data">
     {% call ui.card() %}
@@ -22,6 +39,9 @@
       {% endcall %}
       {% call ui.field(t('header_label'), 'headerInvoice') %}
         <textarea id="headerInvoice" name="headerInvoice" rows="5" placeholder="{{ t('header_placeholder') }}" style="width:100%; resize:vertical; max-height:220px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
+      {% endcall %}
+      {% call ui.field('Footer', 'footerInvoice') %}
+        <textarea id="footerInvoice" name="footerInvoice" rows="5" placeholder="Enter footer for this invoice..." style="width:100%; resize:vertical; max-height:220px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
       {% endcall %}
       {% call ui.field(t('delivery_label'), 'delivery_notes') %}
         <input type="file" id="delivery_notes" name="delivery_notes" accept=".pdf" multiple>
@@ -83,10 +103,13 @@
         opt.className = 'combo-item';
         opt.style.padding = '8px';
         opt.style.cursor = 'pointer';
-        opt.addEventListener('mousedown', () => { // mousedown to fire before input blur
+        opt.addEventListener('mousedown', async () => { // mousedown to fire before input blur
           comboInput.value = v;
           hiddenInput.value = v;
           closeList();
+          // Auto-fetch default header and footer for this client
+          await fetchClientHeader(v);
+          await fetchClientFooter(v);
         });
         comboList.appendChild(opt);
       });
@@ -97,6 +120,40 @@
       if(!resp.ok) return;
       items = await resp.json();
       renderList(q);
+    }
+    async function fetchClientHeader(clientName){
+      if(!clientName) return;
+      const headerEl = document.getElementById('headerInvoice');
+      if(!headerEl) return;
+      try{
+        const resp = await fetch(`/api/client-headers/${encodeURIComponent(clientName)}`);
+        if(resp.ok){
+          const data = await resp.json();
+          if(data && data.default_header){
+            headerEl.value = data.default_header;
+          }
+        }
+        // If 404 or error, keep existing value (don't clear)
+      } catch(_e){
+        // Keep existing value on error
+      }
+    }
+    async function fetchClientFooter(clientName){
+      if(!clientName) return;
+      const footerEl = document.getElementById('footerInvoice');
+      if(!footerEl) return;
+      try{
+        const resp = await fetch(`/api/client-footers/${encodeURIComponent(clientName)}`);
+        if(resp.ok){
+          const data = await resp.json();
+          if(data && data.default_footer){
+            footerEl.value = data.default_footer;
+          }
+        }
+        // If 404 or error, keep existing value (don't clear)
+      } catch(_e){
+        // Keep existing value on error
+      }
     }
     comboInput.addEventListener('input', () => {
       hiddenInput.value = '';
@@ -131,8 +188,16 @@
 
     async function fetchFxFromFrankfurter(code){
       // Frankfurter returns last business day on weekends
-      const url = `https://api.frankfurter.app/latest?from=CHF&to=${encodeURIComponent(code)}`;
-      const resp = await fetch(url);
+      // Add timestamp to force fresh data and avoid cache
+      const timestamp = new Date().getTime();
+      const url = `https://api.frankfurter.app/latest?from=CHF&to=${encodeURIComponent(code)}&_t=${timestamp}`;
+      const resp = await fetch(url, {
+        cache: 'no-cache',
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
+      });
       if(!resp.ok) throw new Error('Frankfurter error');
       const data = await resp.json();
       const rate = data && data.rates && data.rates[code];
@@ -221,7 +286,7 @@
         generateBtn.disabled = true;
         const txt = generateBtn.textContent;
         generateBtn.dataset.prev = txt;
-        generateBtn.textContent = "{{ t('please_wait') }}";
+        generateBtn.innerHTML = '<span class="spinner"></span>' + "{{ t('please_wait') }}";
         generateBtn.classList.add('loading');
         startEtaCountdown();
       } else {
@@ -352,6 +417,11 @@
         const data = await resp.json().catch(() => ({}));
         if(!resp.ok){
           alert(data.error || "{{ t('request_failed') }}");
+          return;
+        }
+        // Two-phase flow: redirect to review editor when provided
+        if(data && data.redirect_url){
+          window.location.assign(data.redirect_url);
           return;
         }
         // Update invoice name if not set

@@ -1,0 +1,682 @@
+{% extends 'base.html' %}
+{% block content %}
+  <style>
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin 0.6s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .btn.loading { opacity: 0.7; cursor: not-allowed; }
+  </style>
+  <h1>Review & Edit Invoice Payload</h1>
+  <div id="review_root" class="card">
+    <div class="card-body">
+      <div style="margin-bottom:10px;">
+        <div><strong>Draft ID:</strong> <span id="draft_id_view">{{ draft_id }}</span></div>
+        <div><strong>Client:</strong> <span id="client_name_view"></span></div>
+        <div style="margin-top:6px;">
+          <strong>Currency:</strong> 
+          <select id="currency_select" style="margin-left:8px; padding:4px;">
+            <option value="CHF">CHF</option>
+            <option value="EUR">EUR</option>
+            <option value="USD">USD</option>
+            <option value="GBP">GBP</option>
+            <option value="BRL">BRL</option>
+            <option value="JPY">JPY</option>
+            <option value="CNY">CNY</option>
+          </select>
+        </div>
+        <div style="margin-top:6px;">
+          <strong>Exchange Rate (CHF → Currency):</strong> 
+          <input type="number" id="exchange_rate_input" step="0.000001" style="width:150px; margin-left:8px; padding:4px;">
+          <button id="apply_rate_btn" class="btn btn-sm" style="margin-left:8px;">Apply Rate</button>
+          <span id="rate_info" style="margin-left:8px; font-size:0.9em; color:#888;"></span>
+        </div>
+        <div><strong>Invoice name:</strong> <input id="invoice_name_input" type="text" style="min-width:260px;"></div>
+        <div style="margin-top:6px;"><strong>Title:</strong> <input id="title_input" type="text" style="min-width:320px; width:60%;"></div>
+        <div style="margin-top:6px;"><strong>Header:</strong><br><textarea id="header_input" rows="3" style="width:60%; min-width:320px;"></textarea></div>
+        <div style="margin-top:6px;"><strong>Footer:</strong><br><textarea id="footer_input" rows="3" style="width:60%; min-width:320px;"></textarea></div>
+      </div>
+
+      <div id="items_container"></div>
+
+      <div style="margin-top:16px; display:flex; gap:8px;">
+        <button id="save_btn" class="btn">Save Draft</button>
+        <button id="finalize_btn" class="btn btn-primary">Finalize & Generate</button>
+        <a href="{{ url_for('invoicecreation_get') }}" class="btn">Back</a>
+      </div>
+      <div id="result_panel" style="display:none; margin-top:16px;"></div>
+    </div>
+  </div>
+
+  <script>
+    const draftId = "{{ draft_id }}";
+    let originalPayload = null; // keep shape to preserve structure
+    let currentData = null;
+    let dirty = false;
+    const saveBtnEl = document.getElementById('save_btn');
+    const finalizeBtnEl = document.getElementById('finalize_btn');
+
+    // Bexio currency mapping: name → {id, round_factor}
+    const BEXIO_CURRENCY_MAP = {
+      'CHF': { id: 1, round_factor: 0.05 },
+      'EUR': { id: 2, round_factor: 0.01 },
+      'USD': { id: 3, round_factor: 0.01 },
+      'GBP': { id: 4, round_factor: 0.01 },
+      'BRL': { id: 5, round_factor: 0.01 },
+      'JPY': { id: 6, round_factor: 0.01 },
+      'CNY': { id: 7, round_factor: 0.01 },
+      'SEK': { id: 8, round_factor: 0.01 },
+      'AUD': { id: 9, round_factor: 0.01 },
+      'CAD': { id: 10, round_factor: 0.01 },
+      'RUB': { id: 11, round_factor: 0.01 },
+      'DKK': { id: 12, round_factor: 0.01 }
+    };
+
+    function setDirty(){ dirty = true; }
+    function clearDirty(){ dirty = false; }
+
+    function detectPayloadModel(payload){
+      // Returns { kind: 'bexio_object'|'bexio_array_one'|'items_array'|'generic_items',
+      //           getItems(): Position[], setItems(updated): newPayload }
+      // Bexio-like schema: { body: { positions: [...] } }
+      if(payload && typeof payload === 'object' && !Array.isArray(payload) && payload.body && Array.isArray(payload.body.positions)){
+        return {
+          kind: 'bexio_object',
+          getItems(){ return payload.body.positions || []; },
+          setItems(updated){ const out = JSON.parse(JSON.stringify(payload)); out.body = out.body || {}; out.body.positions = updated; return out; },
+        };
+      }
+      // Bexio-like schema wrapped in array with a single element
+      if(Array.isArray(payload) && payload.length >= 1 && payload[0] && payload[0].body && Array.isArray(payload[0].body.positions)){
+        return {
+          kind: 'bexio_array_one',
+          getItems(){ return payload[0].body.positions || []; },
+          setItems(updated){ const out = JSON.parse(JSON.stringify(payload)); out[0].body = out[0].body || {}; out[0].body.positions = updated; return out; },
+        };
+      }
+      // Generic array of items
+      if(Array.isArray(payload)){
+        return {
+          kind: 'items_array',
+          getItems(){ return payload; },
+          setItems(updated){ return updated; },
+        };
+      }
+      // Generic object with items array
+      if(payload && typeof payload === 'object' && Array.isArray(payload.items)){
+        return {
+          kind: 'generic_items',
+          getItems(){ return payload.items; },
+          setItems(updated){ const out = { ...payload, items: updated }; return out; },
+        };
+      }
+      // Fallback: empty
+      return {
+        kind: 'unknown',
+        getItems(){ return []; },
+        setItems(updated){ return payload; },
+      };
+    }
+
+    function el(tag, props = {}, children = []){
+      const e = document.createElement(tag);
+      Object.entries(props).forEach(([k,v]) => {
+        if(k === 'className') e.className = v; else if(k === 'text') e.textContent = v; else e.setAttribute(k, v);
+      });
+      (Array.isArray(children) ? children : [children]).filter(Boolean).forEach(c => e.appendChild(c));
+      return e;
+    }
+
+    function guessNameKey(item){
+      for(const k of ['product_name','Produktname','Name','name']){
+        if(Object.prototype.hasOwnProperty.call(item, k)) return k;
+      }
+      return null;
+    }
+
+    function getItemDisplayName(item){
+      const key = guessNameKey(item);
+      const v = key ? item[key] : '';
+      return v ?? '';
+    }
+
+    function extractFieldsView(item){
+      // returns { mode: 'fields'|'flat', fields: Map<key, value>, nameKey }
+      const nameKey = guessNameKey(item);
+      if(item && typeof item.fields === 'object' && item.fields && !Array.isArray(item.fields)){
+        const map = new Map(Object.entries(item.fields));
+        return { mode: 'fields', fields: map, nameKey };
+      }
+      const map = new Map();
+      Object.entries(item || {}).forEach(([k,v]) => {
+        if(k === nameKey) return;
+        if(v === null || ['string','number','boolean'].includes(typeof v)){
+          map.set(k, v);
+        }
+      });
+      return { mode: 'flat', fields: map, nameKey };
+    }
+
+    function buildItemEditor(item, idx){
+      // Generic KV editor fallback (kept for non-Bexio payloads)
+      const { mode, fields, nameKey } = extractFieldsView(item);
+      const list = el('div', { className: 'kv-list' });
+      function renderList(){
+        list.innerHTML = '';
+        Array.from(fields.entries()).forEach(([k,v]) => {
+          const row = el('div', { className: 'kv-row' });
+          const keyInput = el('input', { type: 'text', value: k });
+          const valInput = el('input', { type: 'text', value: (v ?? '') });
+          const delBtn = el('button', { className: 'btn btn-danger btn-sm' }, [document.createTextNode('Remove')]);
+          delBtn.addEventListener('click', () => { fields.delete(keyInput.value); renderList(); });
+          row.appendChild(keyInput);
+          row.appendChild(valInput);
+          row.appendChild(delBtn);
+          keyInput.addEventListener('input', () => {
+            const oldKey = k;
+            if(oldKey !== keyInput.value){ fields.delete(oldKey); }
+            fields.set(keyInput.value, valInput.value);
+          });
+          valInput.addEventListener('input', () => { fields.set(keyInput.value, valInput.value); });
+          list.appendChild(row);
+        });
+      }
+      renderList();
+      const addBtn = el('button', { className: 'btn btn-sm' }, [document.createTextNode('+ Add Field')]);
+      addBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        let base = 'key'; let i = 1; let candidate = `${base}_${i}`;
+        while(fields.has(candidate)){ i += 1; candidate = `${base}_${i}`; }
+        fields.set(candidate, '');
+        renderList();
+      });
+      const section = el('div', { className: 'card', 'data-index': String(idx) }, [
+        el('div', { className: 'card-body' }, [
+          el('div', { className: 'label' }, [document.createTextNode('Item'), el('span', { text: ` #${idx+1}` })]),
+          list,
+          addBtn,
+        ])
+      ]);
+      section.__readBack = () => {
+        const out = JSON.parse(JSON.stringify(item));
+        const obj = Object.fromEntries(fields.entries());
+        if(mode === 'fields') out.fields = obj; else {
+          Object.keys(out).forEach(k => { if(k !== nameKey && typeof out[k] !== 'object') delete out[k]; });
+          Object.assign(out, obj);
+        }
+        return out;
+      };
+      return section;
+    }
+
+    function extractStrong(html){
+      try{
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html || '';
+        const s = tmp.querySelector('strong');
+        return s ? s.textContent : '';
+      } catch(_e){
+        return '';
+      }
+    }
+
+    function htmlEscape(s){
+      return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function parseTextToPairs(html){
+      // Expect format: <strong>Title</strong><br>Key: Value<br>Key2: Value2
+      // Now preserves HTML formatting (strong tags) for each line
+      const title = extractStrong(html);
+      let rest = '';
+      try{
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html || '';
+        // remove first <strong>...</strong>
+        const s = tmp.querySelector('strong');
+        if(s){ s.remove(); }
+        rest = tmp.innerHTML || '';
+      } catch(_e){
+        rest = '';
+      }
+      // split on <br> into lines, preserving HTML tags
+      const div = document.createElement('div');
+      div.innerHTML = rest;
+      const raw = div.innerHTML.split(/<br\s*\/?>(?=.)/i).map(x => x.trim()).filter(Boolean);
+      
+      const pairs = [];
+      raw.forEach(line => {
+        if(!line) return;
+        
+        // Check if this line has <strong> tag wrapping it
+        const hasStrong = /<strong>/i.test(line);
+        
+        // Strip HTML tags to get plain text for parsing
+        const plainText = line.replace(/<[^>]*>/g, '').trim();
+        if(!plainText) return;
+        
+        const idx = plainText.indexOf(':');
+        if(idx > -1){
+          const key = plainText.slice(0, idx).trim();
+          const val = plainText.slice(idx+1).trim();
+          if(key){ 
+            pairs.push({ 
+              key, 
+              value: val,
+              isStrong: hasStrong  // Store formatting info
+            }); 
+          }
+        }
+        // Skip lines without colon - don't add "Note" entries
+      });
+      return { title, pairs };
+    }
+
+    function buildPairsUI(pairs){
+      const list = el('div', { className: 'kv-list' });
+      function render(){
+        list.innerHTML = '';
+        pairs.forEach((pair, i) => {
+          const row = el('div', { className: 'kv-row' });
+          const keyInput = el('input', { type: 'text' }); 
+          keyInput.value = pair.key;
+          if(pair.isStrong){ keyInput.style.fontWeight = 'bold'; }
+          
+          const valInput = el('input', { type: 'text' }); 
+          valInput.value = pair.value;
+          if(pair.isStrong){ valInput.style.fontWeight = 'bold'; }
+          
+          // start disabled; user clicks Edit
+          keyInput.disabled = true; valInput.disabled = true;
+          
+          const editBtn = el('button', { className: 'btn btn-sm' }, [document.createTextNode('Edit')]);
+          const delBtn = el('button', { className: 'btn btn-danger btn-sm' }, [document.createTextNode('Remove')]);
+          editBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const now = keyInput.disabled;
+            keyInput.disabled = !now; valInput.disabled = !now;
+            editBtn.textContent = now ? 'Done' : 'Edit';
+            if(!now){ // toggled to disabled → persist back
+              pair.key = keyInput.value; pair.value = valInput.value;
+              setDirty();
+            }
+          });
+          delBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            pairs.splice(i, 1);
+            render();
+            setDirty();
+          });
+          row.appendChild(keyInput);
+          row.appendChild(valInput);
+          row.appendChild(editBtn);
+          row.appendChild(delBtn);
+          list.appendChild(row);
+        });
+      }
+      render();
+      return { list, render };
+    }
+
+    function buildBexioEditor(positions){
+      const sections = [];
+      const container = document.getElementById('items_container');
+      container.innerHTML = '';
+      positions.forEach((p, idx) => {
+        const parsed = parseTextToPairs(p.text || '');
+        // Use intern_name if available, otherwise fall back to parsed title or Position X
+        const titleText = p.intern_name || parsed.title || `Position ${idx+1}`;
+        const wrap = el('div', { className: 'card', 'data-index': String(idx) });
+        const body = el('div', { className: 'card-body' });
+        body.appendChild(el('div', { className: 'label' }, [document.createTextNode('Product: '), el('strong', { text: titleText })]));
+        // Editable amount and unit_price
+        const meta = el('div', { className: 'meta' });
+        const amountRow = el('div');
+        amountRow.appendChild(el('span', { text: 'amount: ' }));
+        const amountInput = el('input', { type: 'text', style: 'width:120px;' });
+        amountInput.value = (p.amount ?? '').toString();
+        amountInput.addEventListener('input', setDirty);
+        amountRow.appendChild(amountInput);
+        meta.appendChild(amountRow);
+        const priceRow = el('div');
+        priceRow.appendChild(el('span', { text: 'unit price: ' }));
+        const priceInput = el('input', { type: 'text', style: 'width:120px;' });
+        priceInput.value = (p.unit_price ?? '').toString();
+        priceInput.addEventListener('input', setDirty);
+        priceRow.appendChild(priceInput);
+        meta.appendChild(priceRow);
+        body.appendChild(meta);
+        // Key/Value editor derived from text
+        const { list, render } = buildPairsUI(parsed.pairs);
+        body.appendChild(list);
+        const addBtn = el('button', { className: 'btn btn-sm' }, [document.createTextNode('+ Add Field')]);
+        addBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          parsed.pairs.push({ key: 'Key', value: 'Value', isStrong: false });
+          render();
+          setDirty();
+        });
+        body.appendChild(addBtn);
+        wrap.appendChild(body);
+        wrap.__originalUnitPrice = p.unit_price; // Store original price for conversion
+        wrap.__priceInput = priceInput; // Store reference for recalculation
+        wrap.__readBack = () => {
+          // Reconstruct text with proper HTML formatting
+          const parts = [ `<strong>${htmlEscape(titleText)}</strong>` ];
+          parsed.pairs.forEach(pair => {
+            const k = htmlEscape(pair.key ?? '');
+            const v = htmlEscape(pair.value ?? '');
+            if(k || v){ 
+              const line = `${k}: ${v}`;
+              // Wrap in <strong> if isStrong flag is set
+              if(pair.isStrong){
+                parts.push(`<strong>${line}<br /></strong>`);
+              } else {
+                parts.push(line);
+              }
+            }
+          });
+          const textHtml = parts.join('<br />');
+          return { ...p, text: textHtml, amount: amountInput.value, unit_price: priceInput.value };
+        };
+        sections.push(wrap);
+        container.appendChild(wrap);
+      });
+      return sections;
+    }
+
+    function renderEditor(payload){
+      const model = detectPayloadModel(payload);
+      const items = model.getItems();
+      if(Array.isArray(items) && items.length){
+        if(model.kind === 'bexio_object' || model.kind === 'bexio_array_one'){
+          const sections = buildBexioEditor(items);
+          return { sections, model };
+        }
+        const container = document.getElementById('items_container');
+        container.innerHTML = '';
+        const sections = items.map((it, idx) => buildItemEditor(it, idx));
+        sections.forEach(s => container.appendChild(s));
+        return { sections, model };
+      }
+      const container = document.getElementById('items_container');
+      container.innerHTML = '';
+      container.appendChild(el('div', { text: 'No items to edit.' }));
+      return { sections: [], model };
+    }
+
+    async function loadDraft(){
+      const resp = await fetch(`/api/draft/${encodeURIComponent(draftId)}`);
+      if(!resp.ok) throw new Error('Draft not found');
+      const data = await resp.json();
+      currentData = data;
+      originalPayload = data.payload;
+      document.getElementById('client_name_view').textContent = data.client_name || '';
+      const invNameEl = document.getElementById('invoice_name_input');
+      invNameEl.value = data.invoice_name || '';
+      const { sections, model } = renderEditor(data.payload);
+      // Currency and Exchange Rate
+      const currencySelect = document.getElementById('currency_select');
+      const exchangeRateInput = document.getElementById('exchange_rate_input');
+      const rateInfo = document.getElementById('rate_info');
+      let currentCurrencyData = null;
+      try{
+        const cx = data.currency_exchange ? JSON.parse(data.currency_exchange) : null;
+        if(cx && cx.code){
+          currencySelect.value = cx.code;
+          exchangeRateInput.value = cx.rate || 1;
+          // Ensure rounding factor is set from the Bexio mapping
+          const bexioData = BEXIO_CURRENCY_MAP[cx.code] || BEXIO_CURRENCY_MAP['CHF'];
+          currentCurrencyData = { ...cx, rounding: bexioData.round_factor };
+          if(cx.asOf) rateInfo.textContent = `Rate from ${cx.asOf}`;
+        } else {
+          currencySelect.value = data.payload?.body?.currency_id ?? 'CHF';
+          exchangeRateInput.value = 1;
+          // Initialize with default CHF data
+          const bexioDataCHF = BEXIO_CURRENCY_MAP['CHF'];
+          currentCurrencyData = {
+            base: 'CHF',
+            code: 'CHF',
+            rate: 1.0,
+            rounding: bexioDataCHF.round_factor,
+            precision: 6
+          };
+        }
+      } catch(_e){ 
+        currencySelect.value = data.payload?.body?.currency_id ?? 'CHF';
+        exchangeRateInput.value = 1;
+        // Initialize with default CHF data on error
+        const bexioDataCHF = BEXIO_CURRENCY_MAP['CHF'];
+        currentCurrencyData = {
+          base: 'CHF',
+          code: 'CHF',
+          rate: 1.0,
+          rounding: bexioDataCHF.round_factor,
+          precision: 6
+        };
+      }
+      // Title/Header/Footer defaults
+      const titleInput = document.getElementById('title_input');
+      const headerInput = document.getElementById('header_input');
+      const footerInput = document.getElementById('footer_input');
+      titleInput.value = (data.title_invoice ?? data.payload?.body?.title ?? '') || '';
+      headerInput.value = (data.header_invoice ?? data.payload?.body?.header ?? '') || '';
+      footerInput.value = (data.footer_invoice ?? data.payload?.body?.footer ?? '') || '';
+      // mark dirty on top-level inputs
+      document.getElementById('invoice_name_input').addEventListener('input', setDirty);
+      titleInput.addEventListener('input', setDirty);
+      headerInput.addEventListener('input', setDirty);
+      footerInput.addEventListener('input', setDirty);
+      currencySelect.addEventListener('change', setDirty);
+      exchangeRateInput.addEventListener('input', setDirty);
+      
+      // Currency rate application
+      document.getElementById('apply_rate_btn').addEventListener('click', () => {
+        const newRate = parseFloat(exchangeRateInput.value);
+        if(isNaN(newRate) || newRate <= 0){
+          alert('Please enter a valid exchange rate.');
+          return;
+        }
+        const originalRate = currentCurrencyData?.rate || 1;
+        // Recalculate all prices
+        sections.forEach(section => {
+          if(section.__originalUnitPrice !== undefined && section.__priceInput){
+            const originalPrice = parseFloat(section.__originalUnitPrice);
+            if(!isNaN(originalPrice)){
+              // Convert: original CHF price * new rate
+              const newPrice = originalPrice * (newRate / originalRate);
+              section.__priceInput.value = newPrice.toFixed(6);
+            }
+          }
+        });
+        // Update currency data
+        const bexioData = BEXIO_CURRENCY_MAP[currencySelect.value] || BEXIO_CURRENCY_MAP['CHF'];
+        currentCurrencyData = {
+          base: 'CHF',
+          code: currencySelect.value,
+          rate: newRate,
+          asOf: new Date().toISOString().slice(0,10),
+          provider: 'manual',
+          quoteType: 'user-edited',
+          rounding: bexioData.round_factor,
+          precision: 6
+        };
+        rateInfo.textContent = `Rate manually updated`;
+        setDirty();
+      });
+      
+      currencySelect.addEventListener('change', async () => {
+        const selectedCode = currencySelect.value;
+        if(selectedCode === 'CHF'){
+          exchangeRateInput.value = 1;
+          rateInfo.textContent = '';
+          // Update currency data for CHF
+          const bexioDataCHF = BEXIO_CURRENCY_MAP['CHF'];
+          currentCurrencyData = {
+            base: 'CHF',
+            code: 'CHF',
+            rate: 1.0,
+            asOf: new Date().toISOString().slice(0,10),
+            provider: 'static',
+            quoteType: 'identity',
+            rounding: bexioDataCHF.round_factor,
+            precision: 6
+          };
+          setDirty();
+          return;
+        }
+        // Fetch rate from Frankfurter with cache-busting to get latest rates
+        try{
+          rateInfo.textContent = 'Fetching rate...';
+          const timestamp = new Date().getTime();
+          const url = `https://api.frankfurter.app/latest?from=CHF&to=${encodeURIComponent(selectedCode)}&_t=${timestamp}`;
+          const resp = await fetch(url, {
+            cache: 'no-cache',
+            headers: {
+              'Cache-Control': 'no-cache',
+              'Pragma': 'no-cache'
+            }
+          });
+          if(resp.ok){
+            const data = await resp.json();
+            const rate = data?.rates?.[selectedCode];
+            if(rate){
+              exchangeRateInput.value = rate;
+              rateInfo.textContent = `Rate from ${data.date || 'Frankfurter'}`;
+              // Update currency data with fetched rate
+              const bexioDataFetched = BEXIO_CURRENCY_MAP[selectedCode] || BEXIO_CURRENCY_MAP['CHF'];
+              currentCurrencyData = {
+                base: 'CHF',
+                code: selectedCode,
+                rate: rate,
+                asOf: data.date || new Date().toISOString().slice(0,10),
+                provider: 'Frankfurter',
+                quoteType: 'ECB daily',
+                rounding: bexioDataFetched.round_factor,
+                precision: 6
+              };
+              setDirty();
+            }
+          } else {
+            rateInfo.textContent = 'Could not fetch rate';
+          }
+        } catch(err){
+          rateInfo.textContent = 'Error fetching rate';
+        }
+      });
+      
+      clearDirty();
+      async function buildAndSaveDraft(){
+        const updated = sections.map((s) => s.__readBack());
+        let newPayload = model.setItems(updated);
+        try{
+          if(model.kind === 'bexio_object'){
+            newPayload.body = newPayload.body || {};
+            newPayload.body.title = titleInput.value || '';
+            newPayload.body.header = headerInput.value || '';
+            newPayload.body.footer = footerInput.value || '';
+            // Update currency_id in payload body with Bexio currency ID (not name)
+            if(currentCurrencyData && currentCurrencyData.code){
+              const currencyCode = currentCurrencyData.code;
+              const bexioData = BEXIO_CURRENCY_MAP[currencyCode] || BEXIO_CURRENCY_MAP['CHF'];
+              newPayload.body.currency_id = bexioData.id;
+            }
+          } else if(model.kind === 'bexio_array_one'){
+            newPayload[0].body = newPayload[0].body || {};
+            newPayload[0].body.title = titleInput.value || '';
+            newPayload[0].body.header = headerInput.value || '';
+            newPayload[0].body.footer = footerInput.value || '';
+            // Update currency_id in payload body with Bexio currency ID (not name)
+            if(currentCurrencyData && currentCurrencyData.code){
+              const currencyCode = currentCurrencyData.code;
+              const bexioData = BEXIO_CURRENCY_MAP[currencyCode] || BEXIO_CURRENCY_MAP['CHF'];
+              newPayload[0].body.currency_id = bexioData.id;
+            }
+          }
+        } catch(_e){}
+        const body = { 
+          payload: newPayload, 
+          invoice_name: invNameEl.value, 
+          title_invoice: titleInput.value, 
+          header_invoice: headerInput.value, 
+          footer_invoice: footerInput.value,
+          currency_exchange: currentCurrencyData ? JSON.stringify(currentCurrencyData) : null
+        };
+        const r = await fetch(`/api/draft/${encodeURIComponent(draftId)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if(!r.ok){
+          throw new Error('Save failed');
+        }
+        originalPayload = newPayload;
+        clearDirty();
+      }
+
+      document.getElementById('save_btn').onclick = async () => {
+        try{
+          await buildAndSaveDraft();
+          alert('Saved');
+        } catch(e){
+          alert(e?.message || 'Save failed');
+        }
+      };
+
+      document.getElementById('finalize_btn').onclick = async () => {
+        const btn = document.getElementById('finalize_btn');
+        const originalText = btn.textContent;
+        
+        // Set loading state with single spinner
+        btn.disabled = true;
+        btn.classList.add('loading');
+        btn.innerHTML = '<span class="spinner"></span>Generating Invoice...';
+        saveBtnEl.disabled = true;
+        
+        try{
+          // Always save before finalize
+          await buildAndSaveDraft();
+          saveBtnEl.disabled = false;
+          
+          // Generate invoice
+          const r = await fetch('/api/finalize_invoice', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ draft_id: draftId }) });
+          const data = await r.json().catch(() => ({}));
+          if(!r.ok){ 
+            alert(data.error || 'Finalize failed'); 
+            return; 
+          }
+          const panel = document.getElementById('result_panel');
+          panel.style.display = 'block';
+          panel.innerHTML = `
+            <div class="card">
+              <div class="card-body">
+                <div style="margin-bottom:8px;">${data.name || 'invoice.pdf'}</div>
+                <a class="btn" href="${data.preview_url}" target="_blank">{{ t('preview') }}</a>
+                <a class="btn btn-primary" href="${data.download_url}">{{ t('download') }}</a>
+              </div>
+            </div>`;
+        } catch(e){
+          saveBtnEl.disabled = false;
+          alert(e?.message || 'Operation failed');
+        } finally {
+          btn.disabled = false;
+          btn.classList.remove('loading');
+          btn.textContent = originalText;
+        }
+      };
+    }
+
+    loadDraft().catch(err => { alert(err?.message || 'Error'); });
+  </script>
+{% endblock %}
+
+

@@ -5,6 +5,7 @@ from datetime import datetime
 import uuid
 from typing import Any
 from functools import wraps
+import re
 
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file, after_this_request
 from werkzeug.utils import secure_filename
@@ -58,18 +59,33 @@ if not INVOICES_DB_PATH:
         INVOICES_DB_PATH = os.path.join(BASE_DIR, "invoices.db")
 os.makedirs(os.path.dirname(INVOICES_DB_PATH), exist_ok=True)
 
+# Dedicated Client Headers database (store default headers per client)
+CLIENT_HEADERS_DB_PATH = os.getenv("CLIENT_HEADERS_DB_PATH")
+if not CLIENT_HEADERS_DB_PATH:
+    configured_headers_db_dir = os.getenv("CLIENT_HEADERS_DB_DIR")
+    if configured_headers_db_dir:
+        CLIENT_HEADERS_DB_PATH = os.path.join(configured_headers_db_dir, "client_headers.db")
+    else:
+        # Use same directory as pricing DB for consistency
+        CLIENT_HEADERS_DB_PATH = os.path.join(os.path.dirname(PRICING_DB_PATH), "client_headers.db")
+os.makedirs(os.path.dirname(CLIENT_HEADERS_DB_PATH), exist_ok=True)
+
 # Set your n8n webhook URL here directly
 WEBHOOK_URL = os.getenv("INVOICE_WEBHOOK_URL")  # e.g., "http://localhost:5678/webhook/your-path"
-# Read timeout minutes for webhook response (default 5 minutes)
+# Two-phase flow configuration
+GENERATE_PAYLOAD_JSON_WEBHOOK_URL = os.getenv("GENERATE_PAYLOAD_JSON_WEBHOOK_URL")  # Workflow 1
+GENERATE_INVOICE_WEBHOOK_URL = os.getenv("GENERATE_INVOICE_WEBHOOK_URL")  # Workflow 2
+USE_TWO_PHASE_FLOW = ((os.getenv("USE_TWO_PHASE_FLOW") or "false").strip().lower() in {"1", "true", "yes", "on"})
+# Read timeout minutes for webhook response (default 10 minutes to allow for complex processing)
 try:
     _timeout_min_raw = os.getenv("INVOICE_WEBHOOK_TIMEOUT_MIN")
-    WEBHOOK_TIMEOUT_MIN = int(_timeout_min_raw) if _timeout_min_raw else 5
+    WEBHOOK_TIMEOUT_MIN = int(_timeout_min_raw) if _timeout_min_raw else 10
 except Exception:
-    WEBHOOK_TIMEOUT_MIN = 5
+    WEBHOOK_TIMEOUT_MIN = 10
 INFINITE_WEBHOOK_TIMEOUT = (WEBHOOK_TIMEOUT_MIN == 0)
 if WEBHOOK_TIMEOUT_MIN < 0:
-    WEBHOOK_TIMEOUT_MIN = 5
-WEBHOOK_CONNECT_TIMEOUT_SEC = 30
+    WEBHOOK_TIMEOUT_MIN = 10
+WEBHOOK_CONNECT_TIMEOUT_SEC = 60  # Increased from 30 to 60 seconds for connection
 WEBHOOK_READ_TIMEOUT_SEC = WEBHOOK_TIMEOUT_MIN * 60
 
 ALLOWED_EXCEL_EXTENSIONS = {".xlsx", ".xlsm"}
@@ -319,6 +335,32 @@ def init_db() -> None:
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_invoices_created_at ON invoices(created_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_invoices_client_created ON invoices(client, created_at)")
+        # Draft invoices (two-phase flow)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS "draft_invoices" (
+              draft_id TEXT PRIMARY KEY,
+              client_name TEXT NOT NULL,
+              invoice_name TEXT,
+              payload_json TEXT NOT NULL,
+              title_invoice TEXT,
+              header_invoice TEXT,
+              footer_invoice TEXT,
+              currency_exchange TEXT,
+              status TEXT DEFAULT 'draft',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              finalized_at TEXT
+            )
+            """
+        )
+        # Add footer_invoice column if it doesn't exist (for existing databases)
+        try:
+            cur.execute("ALTER TABLE draft_invoices ADD COLUMN footer_invoice TEXT")
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_drafts_status_created ON draft_invoices(status, created_at)")
         conn.commit()
     except Exception:
         pass
@@ -327,11 +369,159 @@ def init_db() -> None:
             conn.close()
         except Exception:
             pass
+    # Initialize client headers DB
+    try:
+        hconn = get_client_headers_db()
+        ensure_client_headers_table(hconn)
+    except Exception:
+        pass
+    finally:
+        try:
+            hconn.close()
+        except Exception:
+            pass
 
 def get_invoices_db() -> sqlite3.Connection:
     conn = sqlite3.connect(INVOICES_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+def get_client_headers_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(CLIENT_HEADERS_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def ensure_client_headers_table(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS "client_headers" (
+          client_name TEXT PRIMARY KEY,
+          default_header TEXT NOT NULL,
+          default_footer TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    # Add default_footer column if it doesn't exist (for existing databases)
+    try:
+        cur.execute("ALTER TABLE client_headers ADD COLUMN default_footer TEXT")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
+    conn.commit()
+
+def get_client_header(client_name: str) -> str | None:
+    """Fetch the default header for a given client, or None if not set."""
+    try:
+        conn = get_client_headers_db()
+        ensure_client_headers_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT default_header FROM client_headers WHERE client_name = ?", (client_name,))
+        row = cur.fetchone()
+        return row["default_header"] if row else None
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def get_client_footer(client_name: str) -> str | None:
+    """Fetch the default footer for a given client, or None if not set."""
+    try:
+        conn = get_client_headers_db()
+        ensure_client_headers_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT default_footer FROM client_headers WHERE client_name = ?", (client_name,))
+        row = cur.fetchone()
+        return row["default_footer"] if row else None
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def save_client_header(client_name: str, default_header: str) -> bool:
+    """Save or update the default header for a client."""
+    try:
+        conn = get_client_headers_db()
+        ensure_client_headers_table(conn)
+        cur = conn.cursor()
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        # Check if exists
+        cur.execute("SELECT client_name FROM client_headers WHERE client_name = ?", (client_name,))
+        exists = cur.fetchone() is not None
+        if exists:
+            cur.execute(
+                "UPDATE client_headers SET default_header = ?, updated_at = ? WHERE client_name = ?",
+                (default_header, now_iso, client_name)
+            )
+        else:
+            cur.execute(
+                "INSERT INTO client_headers (client_name, default_header, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (client_name, default_header, now_iso, now_iso)
+            )
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def save_client_footer(client_name: str, default_footer: str) -> bool:
+    """Save or update the default footer for a client."""
+    try:
+        conn = get_client_headers_db()
+        ensure_client_headers_table(conn)
+        cur = conn.cursor()
+        now_iso = datetime.utcnow().isoformat() + "Z"
+        # Check if exists
+        cur.execute("SELECT client_name FROM client_headers WHERE client_name = ?", (client_name,))
+        exists = cur.fetchone() is not None
+        if exists:
+            cur.execute(
+                "UPDATE client_headers SET default_footer = ?, updated_at = ? WHERE client_name = ?",
+                (default_footer, now_iso, client_name)
+            )
+        else:
+            cur.execute(
+                "INSERT INTO client_headers (client_name, default_footer, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (client_name, default_footer, now_iso, now_iso)
+            )
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def list_all_client_headers() -> list[dict]:
+    """List all client headers and footers."""
+    try:
+        conn = get_client_headers_db()
+        ensure_client_headers_table(conn)
+        cur = conn.cursor()
+        cur.execute("SELECT client_name, default_header, default_footer, created_at, updated_at FROM client_headers ORDER BY client_name ASC")
+        rows = cur.fetchall()
+        return [{"client_name": r["client_name"], "default_header": r["default_header"], "default_footer": r.get("default_footer"), "created_at": r["created_at"], "updated_at": r["updated_at"]} for r in rows]
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 def add_invoice_db_record(inv_id: str, name: str, client: str, rel_pdf_path: str, size_bytes: int, created_at_iso: str) -> None:
     try:
@@ -545,7 +735,27 @@ TRANSLATIONS = {
         "brand": "Generate Invoice",
         "nav_feeddata": "Feed data",
         "nav_invoicecreation": "Invoice creation",
+        "nav_clientheaders": "Client Meta",
         "feed_title": "Upload price sheet",
+        "client_headers_title": "Manage Client Meta Information",
+        "client_headers_select_client": "Select Client",
+        "client_headers_tab_header": "Headers",
+        "client_headers_tab_footer": "Footers",
+        "client_headers_default_header": "Default Header",
+        "client_headers_default_footer": "Default Footer",
+        "client_headers_placeholder": "Enter the default header for this client...",
+        "client_footers_placeholder": "Enter the default footer for this client...",
+        "client_headers_save": "Save Header",
+        "client_footers_save": "Save Footer",
+        "client_headers_clear": "Clear",
+        "client_headers_success": "Header saved successfully for client '{client}'.",
+        "client_footers_success": "Footer saved successfully for client '{client}'.",
+        "client_headers_error": "Error saving header: {error}",
+        "client_footers_error": "Error saving footer: {error}",
+        "client_headers_list_title": "Existing Client Headers",
+        "client_footers_list_title": "Existing Client Footers",
+        "client_headers_no_data": "No client headers configured yet.",
+        "client_footers_no_data": "No client footers configured yet.",
         "client_name": "Client name",
         "excel_label": "Excel (.xlsx / .xlsm)",
         "currency": "Currency",
@@ -612,7 +822,27 @@ TRANSLATIONS = {
         "brand": "Rechnung erstellen",
         "nav_feeddata": "Einspeisen",
         "nav_invoicecreation": "Rechnungserstellung",
+        "nav_clientheaders": "Kunden-Meta",
         "feed_title": "Preisliste hochladen",
+        "client_headers_title": "Kunden-Meta-Informationen verwalten",
+        "client_headers_select_client": "Kunde auswählen",
+        "client_headers_tab_header": "Header",
+        "client_headers_tab_footer": "Footer",
+        "client_headers_default_header": "Standard-Header",
+        "client_headers_default_footer": "Standard-Footer",
+        "client_headers_placeholder": "Geben Sie den Standard-Header für diesen Kunden ein...",
+        "client_footers_placeholder": "Geben Sie den Standard-Footer für diesen Kunden ein...",
+        "client_headers_save": "Header speichern",
+        "client_footers_save": "Footer speichern",
+        "client_headers_clear": "Löschen",
+        "client_headers_success": "Header erfolgreich gespeichert für Kunde '{client}'.",
+        "client_footers_success": "Footer erfolgreich gespeichert für Kunde '{client}'.",
+        "client_headers_error": "Fehler beim Speichern des Headers: {error}",
+        "client_footers_error": "Fehler beim Speichern des Footers: {error}",
+        "client_headers_list_title": "Vorhandene Kundenheader",
+        "client_footers_list_title": "Vorhandene Kundenfooter",
+        "client_headers_no_data": "Noch keine Kundenheader konfiguriert.",
+        "client_footers_no_data": "Noch keine Kundenfooter konfiguriert.",
         "client_name": "Client name",
         "excel_label": "Excel (.xlsx / .xlsm)",
         "currency": "Währung",
@@ -765,6 +995,27 @@ def health():
 @login_required
 def feeddata_get():
     return render_template("feeddata.html")
+
+
+@app.get("/clientheaders")
+@login_required
+def clientheaders_get():
+    # Get all clients from pricing DB for the dropdown
+    q = (request.args.get("q") or "").strip()
+    try:
+        pconn = get_pricing_db()
+        if not pricing_table_exists(pconn):
+            clients = []
+        else:
+            clients = list_distinct_kunde_names(pconn, q if q else None)
+        pconn.close()
+    except Exception:
+        clients = []
+    
+    # Get existing client headers
+    existing_headers = list_all_client_headers()
+    
+    return render_template("clientheaders.html", clients=clients, existing_headers=existing_headers, q=q)
 
 
 @app.get("/preise/download")
@@ -998,6 +1249,415 @@ def convert_newlines_to_br(text: str | None) -> str | None:
     s = str(text).replace("\r\n", "\n").replace("\r", "\n")
     return s.replace("\n", "<br>")
 
+def _bexio_headers() -> dict[str, str]:
+    api_key = os.getenv("BEXIO_API_KEY")
+    if not api_key:
+        # Keep silent failure minimal; caller can handle exception or 401
+        raise RuntimeError("BEXIO_API_KEY is not configured")
+    return {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+def fetch_bexio_article_description(article_id: int) -> str | None:
+    """
+    Fetches the Bexio article and returns the raw HTML in 'intern_description'.
+    No parsing or transformation applied.
+    """
+    try:
+        url = f"https://api.bexio.com/2.0/article/{article_id}"
+        resp = requests.get(url, headers=_bexio_headers(), timeout=(30, 60))
+        if not (200 <= resp.status_code < 300):
+            return None
+        data = resp.json()
+        if isinstance(data, dict):
+            return data.get("intern_description")
+        return None
+    except Exception:
+        return None
+
+def _fetch_bexio_article_by_id(article_id: int) -> dict | None:
+    """
+    Returns the full article dict from Bexio by numeric ID.
+    """
+    try:
+        url = f"https://api.bexio.com/2.0/article/{article_id}"
+        resp = requests.get(url, headers=_bexio_headers(), timeout=(30, 60))
+        if not (200 <= resp.status_code < 300):
+            return None
+        data = resp.json()
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+def _fetch_bexio_article_by_intern_code(intern_code: str) -> dict | None:
+    """
+    Resolve article by exact intern_code using the search endpoint.
+    Returns the first exact match dict or None.
+    """
+    code = (intern_code or "").strip()
+    if not code:
+        return None
+    try:
+        url = "https://api.bexio.com/2.0/article/search"
+        body = [
+            {"field": "intern_code", "value": code, "criteria": "="}
+        ]
+        resp = requests.post(url, headers=_bexio_headers(), json=body, timeout=(30, 60))
+        if not (200 <= resp.status_code < 300):
+            return None
+        data = resp.json()
+        if isinstance(data, list) and data:
+            for it in data:
+                try:
+                    if str((it or {}).get("intern_code", "")).strip() == code:
+                        return it
+                except Exception:
+                    continue
+            return data[0]
+        return None
+    except Exception:
+        return None
+
+def _fetch_bexio_unit_name(unit_id: int) -> str | None:
+    """
+    Resolve unit name (e.g., kg, Stk) from Bexio's unit endpoint by unit_id.
+    """
+    try:
+        url = f"https://api.bexio.com/2.0/unit/{int(unit_id)}"
+        resp = requests.get(url, headers=_bexio_headers(), timeout=(30, 30))
+        if not (200 <= resp.status_code < 300):
+            return None
+        data = resp.json()
+        if isinstance(data, dict):
+            return data.get("name")
+        return None
+    except Exception:
+        return None
+
+def _enrich_payload_with_bexio(payload_obj: dict | list) -> None:
+    """
+    Mutates payload_obj in place:
+      - For Bexio invoice positions with 'text' field containing "Product code: XXX",
+        extracts the intern_code, fetches article from Bexio, and replaces 'text' with intern_description.
+      - For legacy items with direct 'intern_code' OR 'article_id'/'product_id' keys,
+        fetch article details from Bexio and set: 'intern_name', 'intern_description', 'unit_id', 'unit_name'
+    Best-effort; skips silently on errors.
+    """
+    processed_codes: set[str] = set()
+    processed_ids: set[int] = set()
+    unit_cache: dict[int, str | None] = {}
+    article_cache_by_code: dict[str, dict | None] = {}
+    article_cache_by_id: dict[int, dict | None] = {}
+
+    def extract_product_code_from_text(text: str) -> str | None:
+        """Extract product code from text field like 'Product code: 80GY6AOPKc1012'"""
+        if not isinstance(text, str):
+            return None
+        match = re.search(r'Product\s+code:\s*([A-Za-z0-9\-_.]+)', text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def parse_html_description_to_pairs(html: str) -> list[dict]:
+        """
+        Parse HTML description into list of key-value pairs with formatting info.
+        Returns: [{'key': 'Weight', 'value': '7 kg', 'isStrong': False}, ...]
+        """
+        if not html or not isinstance(html, str):
+            return []
+        
+        pairs = []
+        # Split by <br> or <br /> tags
+        lines = re.split(r'<br\s*/?>', html, flags=re.IGNORECASE)
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Check if line is wrapped in <strong>
+            is_strong = False
+            if re.match(r'<strong>', line, re.IGNORECASE):
+                is_strong = True
+                # Remove strong tags to get plain text
+                line = re.sub(r'</?strong>', '', line, flags=re.IGNORECASE)
+            
+            # Remove any other HTML tags
+            line = re.sub(r'<[^>]+>', '', line).strip()
+            
+            if not line:
+                continue
+            
+            # Split by first colon to get key-value
+            if ':' in line:
+                key, value = line.split(':', 1)
+                pairs.append({
+                    'key': key.strip(),
+                    'value': value.strip(),
+                    'isStrong': is_strong
+                })
+            else:
+                # Line without colon, treat as note
+                pairs.append({
+                    'key': 'Note',
+                    'value': line,
+                    'isStrong': is_strong
+                })
+        
+        return pairs
+
+    def rebuild_html_from_pairs(title: str, pairs: list[dict], product_code: str = None) -> str:
+        """
+        Rebuild HTML text field from title, pairs, and optional product code.
+        Returns formatted HTML string with Product code prioritized right after title.
+        """
+        parts = []
+        
+        # Add title in strong tag
+        if title:
+            parts.append(f"<strong>{title}</strong>")
+        
+        # Add product code RIGHT AFTER title (prioritized)
+        if product_code:
+            parts.append(f"Product code: {product_code}")
+        
+        # Separate pairs into product_code pairs and others
+        product_code_pairs = []
+        other_pairs = []
+        
+        for pair in pairs:
+            key = pair.get('key', '').strip()
+            if key.lower() == 'product code':
+                product_code_pairs.append(pair)
+            else:
+                other_pairs.append(pair)
+        
+        # Add product code pairs first (if not already added via product_code param)
+        if not product_code:
+            for pair in product_code_pairs:
+                key = pair.get('key', '').strip()
+                value = pair.get('value', '').strip()
+                allow_blank = pair.get('allow_blank', False)
+                
+                if not key:
+                    continue
+                
+                if (value is None or value == '') and not allow_blank:
+                    continue
+                
+                if value is None:
+                    value = ''
+                
+                line = f"{key}: {value}"
+                
+                if pair.get('isStrong'):
+                    parts.append(f"<strong>{line}</strong>")
+                else:
+                    parts.append(line)
+        
+        # Add all other key-value pairs
+        for pair in other_pairs:
+            key = pair.get('key', '').strip()
+            value = pair.get('value', '').strip()
+            allow_blank = pair.get('allow_blank', False)
+            
+            if not key:
+                continue
+            
+            # If value is None or empty, skip it UNLESS allow_blank is True
+            # allow_blank is used for fields like Unit that should show even when blank
+            if (value is None or value == '') and not allow_blank:
+                continue
+            
+            # For blank values that are allowed, use empty string
+            if value is None:
+                value = ''
+            
+            line = f"{key}: {value}"
+            
+            # Wrap in strong if needed
+            if pair.get('isStrong'):
+                parts.append(f"<strong>{line}</strong>")
+            else:
+                parts.append(line)
+        
+        return "<br />".join(parts)
+
+    def handle_bexio_position(d: dict) -> None:
+        """Handle Bexio invoice position with text field containing Product code"""
+        text_val = d.get("text")
+        if not isinstance(text_val, str):
+            return
+        
+        # FIRST: Extract and preserve ONLY specific fields from Workflow 1
+        original_pairs = parse_html_description_to_pairs(text_val)
+        preserved_fields = []
+        # ONLY preserve these fields from delivery note
+        fields_to_preserve = {'mhd', 'gross weight'}
+        for pair in original_pairs:
+            key_lower = (pair.get('key') or '').lower().strip()
+            # Only keep MHD and Gross Weight from Workflow 1
+            if key_lower in fields_to_preserve:
+                preserved_fields.append(pair)
+        
+        # Extract product code from text
+        intern_code = extract_product_code_from_text(text_val)
+        if not intern_code:
+            return
+        
+        # Fetch article from cache or API
+        if intern_code in article_cache_by_code:
+            article = article_cache_by_code[intern_code]
+        else:
+            article = _fetch_bexio_article_by_intern_code(intern_code)
+            article_cache_by_code[intern_code] = article
+            processed_codes.add(intern_code)
+        
+        # Replace text field with intern_description from Bexio and add metadata
+        if isinstance(article, dict):
+            intern_name = article.get("intern_name")
+            intern_desc = article.get("intern_description")
+            unit_id = article.get("unit_id")
+            
+            # Store intern_name as separate field for UI to use as title
+            if intern_name is not None and isinstance(intern_name, str) and intern_name.strip():
+                d["intern_name"] = intern_name
+            
+            # Fetch unit name from Bexio if unit_id exists
+            unit_name = None
+            if unit_id is not None:
+                try:
+                    uid = int(unit_id)
+                    if uid not in unit_cache:
+                        unit_cache[uid] = _fetch_bexio_unit_name(uid)
+                    unit_name = unit_cache[uid]
+                except Exception:
+                    pass
+            
+            # Parse intern_description into key-value pairs
+            pairs = parse_html_description_to_pairs(intern_desc or "")
+            
+            # Remove unwanted fields from Bexio response
+            fields_to_remove = {'gross kg', 'kg', 'note'}
+            pairs = [pair for pair in pairs if (pair.get('key') or '').lower().strip() not in fields_to_remove]
+            
+            # Update or add Unit field with fetched unit name (even if None/blank)
+            # This ensures Unit field is always present and editable by user
+            unit_found = False
+            for pair in pairs:
+                if pair['key'].lower() == 'unit':
+                    pair['value'] = unit_name or ''  # Use empty string if None
+                    pair['allow_blank'] = True  # Mark that this field can be blank
+                    unit_found = True
+                    break
+            # If Unit field doesn't exist, add it
+            if not unit_found:
+                pairs.append({
+                    'key': 'Unit',
+                    'value': unit_name or '',  # Use empty string if None
+                    'isStrong': False,
+                    'allow_blank': True  # Mark that this field can be blank
+                })
+            
+            # APPEND preserved fields from original text (MHD, Gross Weight, etc.)
+            pairs.extend(preserved_fields)
+            
+            # Rebuild text field with title, updated pairs (including preserved fields), and product code
+            d["text"] = rebuild_html_from_pairs(intern_name, pairs, intern_code)
+            
+            # Store intern_code as separate field for reference
+            d["intern_code"] = intern_code
+
+    def handle_legacy_item(d: dict) -> None:
+        """Handle legacy items with direct intern_code or article_id keys"""
+        article = None
+        code_val = d.get("intern_code")
+        if isinstance(code_val, str) and code_val.strip():
+            code_key = code_val.strip()
+            if code_key not in processed_codes:
+                processed_codes.add(code_key)
+                article = article_cache_by_code.get(code_key)
+                if article is None:
+                    article = _fetch_bexio_article_by_intern_code(code_key)
+                    article_cache_by_code[code_key] = article
+            else:
+                article = article_cache_by_code.get(code_key)
+        else:
+            id_key = None
+            for k in ("article_id", "product_id", "id"):
+                if k in d:
+                    id_key = k
+                    break
+            if id_key is not None:
+                try:
+                    aid = int(str(d.get(id_key)).strip())
+                except Exception:
+                    aid = None
+                if isinstance(aid, int):
+                    if aid not in processed_ids:
+                        processed_ids.add(aid)
+                        article = article_cache_by_id.get(aid)
+                        if article is None:
+                            article = _fetch_bexio_article_by_id(aid)
+                            article_cache_by_id[aid] = article
+                    else:
+                        article = article_cache_by_id.get(aid)
+
+        if isinstance(article, dict):
+            if article.get("intern_name") is not None:
+                d["intern_name"] = article.get("intern_name")
+            if article.get("intern_description") is not None:
+                d["intern_description"] = article.get("intern_description")
+            unit_id = article.get("unit_id")
+            if unit_id is None:
+                unit_id = article.get("unit_code")
+            if unit_id is None:
+                unit_id = d.get("unit_id")
+            if unit_id is None:
+                unit_id = d.get("unit_code")
+            if unit_id is not None:
+                d["unit_id"] = unit_id
+                try:
+                    uid = int(unit_id)
+                    if uid not in unit_cache:
+                        unit_cache[uid] = _fetch_bexio_unit_name(uid)
+                    if unit_cache[uid] is not None:
+                        d["unit_name"] = unit_cache[uid]
+                except Exception:
+                    pass
+
+    def walk(obj, depth=0):
+        if depth > 6:
+            return
+        if isinstance(obj, dict):
+            # Check if this is a Bexio position (has 'text' field with Product code)
+            if "text" in obj and isinstance(obj.get("text"), str):
+                text_content = obj.get("text", "")
+                if "Product code:" in text_content or "product code:" in text_content.lower():
+                    # This is a Bexio position with embedded product code
+                    handle_bexio_position(obj)
+                    # Don't recurse into this object's values after handling
+                    return
+            
+            # Check if this is a legacy item with direct keys
+            looks_like_legacy_item = any(k in obj for k in ("intern_code", "article_id", "product_id"))
+            if looks_like_legacy_item:
+                handle_legacy_item(obj)
+            
+            # Recurse into nested structures
+            for v in obj.values():
+                walk(v, depth + 1)
+        elif isinstance(obj, list):
+            for el in obj:
+                walk(el, depth + 1)
+
+    try:
+        walk(payload_obj, 0)
+    except Exception:
+        return
+
 
 @app.post("/api/generate_invoice")
 @login_required
@@ -1006,6 +1666,7 @@ def api_generate_invoice():
     invoice_name = (request.form.get("invoice_name") or "").strip()
     title_invoice = request.form.get("titleInvoice")  # pass-through as-is
     header_invoice = request.form.get("headerInvoice")  # pass-through as-is
+    footer_invoice = request.form.get("footerInvoice")  # pass-through as-is
     currency_exchange_raw = request.form.get("currency_exchange")
     if not client_name:
         flash("Bitte einen Kunden auswählen.", "error")
@@ -1018,8 +1679,11 @@ def api_generate_invoice():
             continue
         valid_pdfs.append(f)
 
-    if not WEBHOOK_URL:
-        return jsonify({"error": tr("webhook_not_set")}), 400
+    # Two-phase: if enabled, we will call payload workflow first and redirect to review page.
+    two_phase_enabled = bool(USE_TWO_PHASE_FLOW and GENERATE_PAYLOAD_JSON_WEBHOOK_URL)
+    if not two_phase_enabled:
+        if not WEBHOOK_URL:
+            return jsonify({"error": tr("webhook_not_set")}), 400
 
     # Build exact-key array from Preise table filtered by Kunde_Name (augmented with synonyms)
     try:
@@ -1047,11 +1711,13 @@ def api_generate_invoice():
             data_fields.append(("Invoice_name", invoice_name_no_pdf))
     except Exception:
         pass
-    # Include optional Title/Header fields
+    # Include optional Title/Header/Footer fields
     if title_invoice is not None and str(title_invoice).strip() != "":
         data_fields.append(("titleInvoice", str(title_invoice)))
     if header_invoice is not None and str(header_invoice).strip() != "":
         data_fields.append(("headerInvoice", convert_newlines_to_br(str(header_invoice))))
+    if footer_invoice is not None and str(footer_invoice).strip() != "":
+        data_fields.append(("footerInvoice", convert_newlines_to_br(str(footer_invoice))))
     # Attach currency exchange block if provided by frontend
     if currency_exchange_raw:
         try:
@@ -1094,6 +1760,66 @@ def api_generate_invoice():
     try:
         # Separate connect/read timeouts to allow longer processing on n8n
         timeout_arg = None if INFINITE_WEBHOOK_TIMEOUT else (WEBHOOK_CONNECT_TIMEOUT_SEC, WEBHOOK_READ_TIMEOUT_SEC)
+        if two_phase_enabled:
+            # Phase 1: request JSON payload from dedicated workflow
+            resp = requests.post(GENERATE_PAYLOAD_JSON_WEBHOOK_URL, data=data_fields, files=file_parts, timeout=timeout_arg)
+            ok = 200 <= resp.status_code < 300
+            if not ok:
+                snippet = (resp.text or "")[:300]
+                ctype = resp.headers.get("Content-Type", "")
+                msg = tr("flash_webhook_fail", status=resp.status_code)
+                return jsonify({"error": f"{msg}. Upstream Content-Type={ctype}. Body snippet: {snippet}"}), 502
+            # Ensure JSON body
+            try:
+                payload_obj = resp.json()
+            except Exception:
+                ctype = resp.headers.get("Content-Type", "")
+                head = (resp.content or b"")[:4]
+                head_hex = head.hex()
+                return jsonify({"error": f"Invalid JSON payload returned. Content-Type={ctype}. First bytes={head_hex}"}), 502
+            # Enrich payload in-memory with Bexio article details before persisting the draft
+            try:
+                _enrich_payload_with_bexio(payload_obj)
+            except Exception:
+                # Best-effort enrichment; do not block draft creation
+                pass
+            # Persist draft into SQL DB
+            draft_id = str(uuid.uuid4())
+            now_iso = datetime.utcnow().isoformat() + "Z"
+            safe_invoice_name = strip_trailing_pdf(invoice_name) if invoice_name else None
+            try:
+                conn = get_invoices_db()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT OR REPLACE INTO draft_invoices (draft_id, client_name, invoice_name, payload_json, title_invoice, header_invoice, footer_invoice, currency_exchange, status, created_at, updated_at, finalized_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, NULL)
+                    """,
+                    (
+                        draft_id,
+                        client_name,
+                        safe_invoice_name,
+                        json.dumps(payload_obj, ensure_ascii=False),
+                        title_invoice,
+                        header_invoice,
+                        footer_invoice,
+                        (currency_exchange_raw or None),
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            # Redirect URL for review page
+            return jsonify({
+                "draft_id": draft_id,
+                "redirect_url": url_for("review_invoice", draft_id=draft_id),
+            })
+        # Single-phase legacy flow
         resp = requests.post(WEBHOOK_URL, data=data_fields, files=file_parts, timeout=timeout_arg)
         ok = 200 <= resp.status_code < 300
         # Validate non-empty PDF
@@ -1692,6 +2418,79 @@ def api_customers():
 
 
 # ----------------------------
+# Client Headers APIs
+# ----------------------------
+@app.get("/api/client-headers")
+@login_required
+def api_list_client_headers():
+    """List all client headers."""
+    headers = list_all_client_headers()
+    return jsonify(headers)
+
+
+@app.get("/api/client-headers/<client_name>")
+@login_required
+def api_get_client_header(client_name: str):
+    """Get the default header for a specific client."""
+    header = get_client_header(client_name)
+    if header is None:
+        return jsonify({"client_name": client_name, "default_header": None}), 404
+    return jsonify({"client_name": client_name, "default_header": header})
+
+
+@app.post("/api/client-headers")
+@login_required
+def api_save_client_header():
+    """Save or update a client's default header."""
+    data = request.get_json(silent=True) or {}
+    client_name = (data.get("client_name") or "").strip()
+    default_header = (data.get("default_header") or "").strip()
+    
+    if not client_name:
+        return jsonify({"error": "client_name is required"}), 400
+    if not default_header:
+        return jsonify({"error": "default_header is required"}), 400
+    
+    success = save_client_header(client_name, default_header)
+    if success:
+        flash(tr("client_headers_success", client=client_name), "success")
+        return jsonify({"ok": True, "client_name": client_name})
+    else:
+        return jsonify({"error": tr("client_headers_error", error="Database error")}), 500
+
+
+@app.get("/api/client-footers/<client_name>")
+@login_required
+def api_get_client_footer(client_name: str):
+    """Get the default footer for a specific client."""
+    footer = get_client_footer(client_name)
+    if footer is None:
+        return jsonify({"client_name": client_name, "default_footer": None}), 404
+    return jsonify({"client_name": client_name, "default_footer": footer})
+
+
+@app.post("/api/client-footers")
+@login_required
+def api_save_client_footer():
+    """Save or update a client's default footer."""
+    data = request.get_json(silent=True) or {}
+    client_name = (data.get("client_name") or "").strip()
+    default_footer = (data.get("default_footer") or "").strip()
+    
+    if not client_name:
+        return jsonify({"error": "client_name is required"}), 400
+    if not default_footer:
+        return jsonify({"error": "default_footer is required"}), 400
+    
+    success = save_client_footer(client_name, default_footer)
+    if success:
+        flash(tr("client_footers_success", client=client_name), "success")
+        return jsonify({"ok": True, "client_name": client_name})
+    else:
+        return jsonify({"error": tr("client_footers_error", error="Database error")}), 500
+
+
+# ----------------------------
 # Invoices (DB-backed) pages and APIs
 # ----------------------------
 @app.get("/invoices")
@@ -1880,6 +2679,274 @@ def api_prices():
         return jsonify(rows)
     except Exception:
         return jsonify([]), 500
+
+
+# ----------------------------
+# Bexio Article APIs (non-invasive)
+# ----------------------------
+@app.get("/api/bexio/article/<int:article_id>/description")
+@login_required
+def api_bexio_article_description(article_id: int):
+    """
+    Returns the raw HTML product description from Bexio's article as JSON.
+    Response body:
+      { "article_id": <id>, "intern_description_html": "<div>...</div>" }
+    """
+    html = fetch_bexio_article_description(article_id)
+    if html is None:
+        return jsonify({"article_id": article_id, "intern_description_html": None}), 404
+    return jsonify({"article_id": article_id, "intern_description_html": html})
+
+
+@app.post("/api/bexio/articles/descriptions")
+@login_required
+def api_bexio_articles_descriptions():
+    """
+    Batch endpoint to resolve descriptions for a list of article IDs.
+    Request JSON:
+      { "ids": [544, 123, ...] }
+    Response JSON:
+      { "items": [ { "article_id": 544, "intern_description_html": "<div>...</div>" }, ... ] }
+    """
+    data = request.get_json(silent=True) or {}
+    ids_raw = data.get("ids") or data.get("product_ids") or []
+    if not isinstance(ids_raw, list) or not ids_raw:
+        return jsonify({"items": []})
+    results = []
+    for v in ids_raw:
+        try:
+            aid = int(str(v).strip())
+        except Exception:
+            continue
+        html = fetch_bexio_article_description(aid)
+        results.append({
+            "article_id": aid,
+            "intern_description_html": html,
+        })
+    return jsonify({"items": results})
+
+
+# ----------------------------
+# Two-phase flow: draft review and finalize
+# ----------------------------
+@app.get("/review-invoice/<draft_id>")
+@login_required
+def review_invoice(draft_id: str):
+    return render_template("review_invoice.html", draft_id=draft_id)
+
+
+@app.get("/api/draft/<draft_id>")
+@login_required
+def api_get_draft(draft_id: str):
+    conn = get_invoices_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT draft_id, client_name, invoice_name, payload_json, title_invoice, header_invoice, footer_invoice, currency_exchange, status, created_at, updated_at, finalized_at FROM draft_invoices WHERE draft_id = ?",
+            (draft_id,)
+        )
+        r = cur.fetchone()
+        if not r:
+            return jsonify({"error": "not found"}), 404
+        try:
+            payload_obj = json.loads(r[3] or "{}")
+        except Exception:
+            payload_obj = {}
+        # Payload is already enriched when saved; no need to re-enrich on fetch
+        return jsonify({
+            "draft_id": r[0],
+            "client_name": r[1],
+            "invoice_name": r[2],
+            "payload": payload_obj,
+            "title_invoice": r[4],
+            "header_invoice": r[5],
+            "footer_invoice": r[6],
+            "currency_exchange": r[7],
+            "status": r[8],
+            "created_at": r[9],
+            "updated_at": r[10],
+            "finalized_at": r[11],
+        })
+    finally:
+        conn.close()
+
+
+@app.put("/api/draft/<draft_id>")
+@login_required
+def api_update_draft(draft_id: str):
+    data = request.get_json(silent=True) or {}
+    payload_obj = data.get("payload")
+    invoice_name_new = data.get("invoice_name")
+    title_new = data.get("title_invoice")
+    header_new = data.get("header_invoice")
+    footer_new = data.get("footer_invoice")
+    currency_exchange_new = data.get("currency_exchange")
+    if payload_obj is None and invoice_name_new is None and title_new is None and header_new is None and footer_new is None and currency_exchange_new is None:
+        return jsonify({"error": "nothing to update"}), 400
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    conn = get_invoices_db()
+    try:
+        cur = conn.cursor()
+        # Fetch existing
+        cur.execute("SELECT invoice_name, title_invoice, header_invoice, footer_invoice, currency_exchange FROM draft_invoices WHERE draft_id = ?", (draft_id,))
+        existing = cur.fetchone()
+        if not existing:
+            return jsonify({"error": "not found"}), 404
+        invoice_name_final = strip_trailing_pdf((invoice_name_new or existing[0]) or "") or None
+        title_final = title_new if title_new is not None else existing[1]
+        header_final = header_new if header_new is not None else existing[2]
+        footer_final = footer_new if footer_new is not None else existing[3]
+        currency_final = currency_exchange_new if currency_exchange_new is not None else existing[4]
+        cur.execute(
+            """
+            UPDATE draft_invoices
+            SET payload_json = COALESCE(?, payload_json),
+                invoice_name = ?,
+                title_invoice = ?,
+                header_invoice = ?,
+                footer_invoice = ?,
+                currency_exchange = ?,
+                updated_at = ?
+            WHERE draft_id = ?
+            """,
+            (
+                (json.dumps(payload_obj, ensure_ascii=False) if payload_obj is not None else None),
+                invoice_name_final,
+                title_final,
+                header_final,
+                footer_final,
+                currency_final,
+                now_iso,
+                draft_id,
+            )
+        )
+        if cur.rowcount == 0:
+            return jsonify({"error": "not found"}), 404
+        conn.commit()
+        return jsonify({"ok": True})
+    finally:
+        conn.close()
+
+
+@app.post("/api/finalize_invoice")
+@login_required
+def api_finalize_invoice():
+    if not (USE_TWO_PHASE_FLOW and GENERATE_INVOICE_WEBHOOK_URL):
+        return jsonify({"error": "two-phase flow disabled"}), 400
+    data = request.get_json(silent=True) or {}
+    draft_id = (data.get("draft_id") or "").strip()
+    if not draft_id:
+        return jsonify({"error": "draft_id required"}), 400
+    conn = get_invoices_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT client_name, invoice_name, payload_json, title_invoice, header_invoice, footer_invoice, currency_exchange FROM draft_invoices WHERE draft_id = ?",
+            (draft_id,)
+        )
+        r = cur.fetchone()
+        if not r:
+            return jsonify({"error": "not found"}), 404
+        client_name = r[0]
+        invoice_name = r[1]
+        payload_json = r[2] or "{}"
+        title_invoice = r[3]
+        header_invoice = r[4]
+        footer_invoice = r[5]
+        currency_exchange_raw = r[6]
+    finally:
+        conn.close()
+
+    # Send payload JSON to second workflow
+    try:
+        payload_obj = json.loads(payload_json)
+    except Exception:
+        payload_obj = {}
+    
+    # Clean payload: Remove intern_code and intern_name from positions (Bexio doesn't support these fields)
+    def clean_payload_for_bexio(obj):
+        """Remove intern_code and intern_name from all positions before sending to Bexio."""
+        if isinstance(obj, dict):
+            # Remove intern_code and intern_name from this dict
+            obj.pop('intern_code', None)
+            obj.pop('intern_name', None)
+            # Recursively clean nested dicts
+            for key, value in obj.items():
+                if isinstance(value, (dict, list)):
+                    clean_payload_for_bexio(value)
+        elif isinstance(obj, list):
+            # Recursively clean each item in list
+            for item in obj:
+                clean_payload_for_bexio(item)
+        return obj
+    
+    # Apply cleanup
+    payload_obj = clean_payload_for_bexio(payload_obj)
+    
+    try:
+        timeout_arg = None if INFINITE_WEBHOOK_TIMEOUT else (WEBHOOK_CONNECT_TIMEOUT_SEC, WEBHOOK_READ_TIMEOUT_SEC)
+        # Provide metadata alongside payload as headers or query params is not ideal; include in a wrapper
+        # but keep the user payload untouched as body
+        resp = requests.post(GENERATE_INVOICE_WEBHOOK_URL, json=payload_obj, timeout=timeout_arg)
+        ok = 200 <= resp.status_code < 300
+        content = resp.content or b""
+        looks_pdf = (len(content) > 0 and content[:4] == b"%PDF")
+        if not ok or not looks_pdf:
+            msg = tr("flash_webhook_fail", status=resp.status_code) if not ok else "Invalid or empty PDF returned"
+            return jsonify({"error": msg}), 502
+
+        disp = resp.headers.get("Content-Disposition", "")
+        fallback_name = "invoice.pdf"
+        if "filename=" in disp:
+            try:
+                fallback_name = disp.split("filename=")[1].strip('"') or fallback_name
+            except Exception:
+                pass
+        final_name = invoice_name or fallback_name
+        safe_final = secure_filename(final_name)
+        if not safe_final.lower().endswith(".pdf"):
+            safe_final += ".pdf"
+
+        archive_filename = f"{uuid.uuid4()}.pdf"
+        archive_rel = archive_filename
+        archive_path = os.path.join(INVOICES_DIR, archive_filename)
+        with open(archive_path, "wb") as f:
+            f.write(resp.content)
+        size_bytes = os.path.getsize(archive_path)
+
+        record = _add_invoice_record(safe_final, client_name, archive_rel, size_bytes)
+        try:
+            add_invoice_db_record(record["id"], record["name"], record["client"], record["file"], record["size"], record["created_at"])
+        except Exception:
+            pass
+
+        tmp_path = os.path.join(DOWNLOAD_TMP_DIR, f"{record['id']}.pdf")
+        with open(tmp_path, "wb") as f:
+            f.write(resp.content)
+
+        # Mark draft as finalized
+        try:
+            conn2 = get_invoices_db()
+            cur2 = conn2.cursor()
+            now_iso = datetime.utcnow().isoformat() + "Z"
+            cur2.execute("UPDATE draft_invoices SET status = 'finalized', finalized_at = ?, updated_at = ? WHERE draft_id = ?", (now_iso, now_iso, draft_id))
+            conn2.commit()
+        finally:
+            try:
+                conn2.close()
+            except Exception:
+                pass
+
+        return jsonify({
+            "id": record["id"],
+            "name": record["name"],
+            "preview_url": url_for("preview_invoice", invoice_id=record["id"]),
+            "download_url": url_for("download_invoice_once", invoice_id=record["id"]),
+            "created_at": record["created_at"],
+            "size": record["size"],
+        })
+    except Exception as e:
+        return jsonify({"error": tr("flash_webhook_send_error", error=str(e))}), 500
 
 
 if __name__ == "__main__":
