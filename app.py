@@ -59,16 +59,15 @@ if not INVOICES_DB_PATH:
         INVOICES_DB_PATH = os.path.join(BASE_DIR, "invoices.db")
 os.makedirs(os.path.dirname(INVOICES_DB_PATH), exist_ok=True)
 
-# Dedicated Client Headers database (store default headers per client)
-CLIENT_HEADERS_DB_PATH = os.getenv("CLIENT_HEADERS_DB_PATH")
-if not CLIENT_HEADERS_DB_PATH:
-    configured_headers_db_dir = os.getenv("CLIENT_HEADERS_DB_DIR")
-    if configured_headers_db_dir:
-        CLIENT_HEADERS_DB_PATH = os.path.join(configured_headers_db_dir, "client_headers.db")
+# Dedicated Client Meta database (store default headers and footers per client)
+CLIENT_META_DB_PATH = os.getenv("CLIENT_META_DB_PATH")
+if not CLIENT_META_DB_PATH:
+    configured_meta_db_dir = os.getenv("CLIENT_META_DB_DIR")
+    if configured_meta_db_dir:
+        CLIENT_META_DB_PATH = os.path.join(configured_meta_db_dir, "client_meta.db")
     else:
-        # Use same directory as pricing DB for consistency
-        CLIENT_HEADERS_DB_PATH = os.path.join(os.path.dirname(PRICING_DB_PATH), "client_headers.db")
-os.makedirs(os.path.dirname(CLIENT_HEADERS_DB_PATH), exist_ok=True)
+        CLIENT_META_DB_PATH = os.path.join(BASE_DIR, "client_meta.db")
+os.makedirs(os.path.dirname(CLIENT_META_DB_PATH), exist_ok=True)
 
 # Set your n8n webhook URL here directly
 WEBHOOK_URL = os.getenv("INVOICE_WEBHOOK_URL")  # e.g., "http://localhost:5678/webhook/your-path"
@@ -387,7 +386,7 @@ def get_invoices_db() -> sqlite3.Connection:
     return conn
 
 def get_client_headers_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(CLIENT_HEADERS_DB_PATH)
+    conn = sqlite3.connect(CLIENT_META_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
