@@ -38,10 +38,18 @@
         <div id="titleInvoice_hint" style="margin-top:6px; font-size:0.9em; color:#666;"></div>
       {% endcall %}
       {% call ui.field(t('header_label'), 'headerInvoice') %}
-        <textarea id="headerInvoice" name="headerInvoice" rows="5" placeholder="{{ t('header_placeholder') }}" style="width:100%; resize:vertical; max-height:220px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
+        <div style="margin-bottom:8px;">
+          <button type="button" id="boldBtnHeader" class="btn" style="padding:4px 12px; font-size:0.9em; background:#333; border:1px solid #555;" title="Bold (Ctrl+B)"><strong>B</strong></button>
+        </div>
+        <div id="headerInvoiceEditor" contenteditable="true" data-placeholder="{{ t('header_placeholder') }}" style="width:100%; min-height:120px; max-height:220px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444; white-space:pre-wrap; word-wrap:break-word;"></div>
+        <textarea id="headerInvoice" name="headerInvoice" style="display:none;"></textarea>
       {% endcall %}
       {% call ui.field('Footer', 'footerInvoice') %}
-        <textarea id="footerInvoice" name="footerInvoice" rows="5" placeholder="Enter footer for this invoice..." style="width:100%; resize:vertical; max-height:220px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
+        <div style="margin-bottom:8px;">
+          <button type="button" id="boldBtnFooter" class="btn" style="padding:4px 12px; font-size:0.9em; background:#333; border:1px solid #555;" title="Bold (Ctrl+B)"><strong>B</strong></button>
+        </div>
+        <div id="footerInvoiceEditor" contenteditable="true" data-placeholder="Enter footer for this invoice..." style="width:100%; min-height:120px; max-height:220px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444; white-space:pre-wrap; word-wrap:break-word;"></div>
+        <textarea id="footerInvoice" name="footerInvoice" style="display:none;"></textarea>
       {% endcall %}
       {% call ui.field(t('delivery_label'), 'delivery_notes') %}
         <input type="file" id="delivery_notes" name="delivery_notes" accept=".pdf" multiple>
@@ -121,36 +129,114 @@
       items = await resp.json();
       renderList(q);
     }
+    // Rich text editor setup
+    const headerEditor = document.getElementById('headerInvoiceEditor');
+    const headerHidden = document.getElementById('headerInvoice');
+    const footerEditor = document.getElementById('footerInvoiceEditor');
+    const footerHidden = document.getElementById('footerInvoice');
+    const boldBtnHeader = document.getElementById('boldBtnHeader');
+    const boldBtnFooter = document.getElementById('boldBtnFooter');
+
+    function htmlToText(html){
+      return (html || '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/div>/gi, '\n').replace(/<div>/gi, '').replace(/<strong>(.*?)<\/strong>/gi, '<strong>$1</strong>');
+    }
+    function textToHtml(text){
+      return (text || '').replace(/\n/g, '<br />');
+    }
+
+    // Update hidden textarea on editor change
+    function syncEditorToHidden(editor, hidden){
+      const html = editor.innerHTML.replace(/<div><br><\/div>/gi, '<br />').replace(/<div>/gi, '').replace(/<\/div>/gi, '<br />');
+      hidden.value = html;
+    }
+
+    headerEditor.addEventListener('input', () => syncEditorToHidden(headerEditor, headerHidden));
+    footerEditor.addEventListener('input', () => syncEditorToHidden(footerEditor, footerHidden));
+
+    // Bold button handlers
+    boldBtnHeader.addEventListener('click', () => {
+      document.execCommand('bold', false, null);
+      headerEditor.focus();
+    });
+    boldBtnFooter.addEventListener('click', () => {
+      document.execCommand('bold', false, null);
+      footerEditor.focus();
+    });
+
+    // Ctrl+B shortcut
+    headerEditor.addEventListener('keydown', (e) => {
+      if((e.ctrlKey || e.metaKey) && e.key === 'b'){
+        e.preventDefault();
+        document.execCommand('bold', false, null);
+      }
+      if(e.key === 'Enter'){
+        // Insert line break instead of div
+        e.preventDefault();
+        document.execCommand('insertHTML', false, '<br /><br />');
+      }
+    });
+    footerEditor.addEventListener('keydown', (e) => {
+      if((e.ctrlKey || e.metaKey) && e.key === 'b'){
+        e.preventDefault();
+        document.execCommand('bold', false, null);
+      }
+      if(e.key === 'Enter'){
+        // Insert line break instead of div
+        e.preventDefault();
+        document.execCommand('insertHTML', false, '<br /><br />');
+      }
+    });
+
+    // Placeholder handling
+    function updatePlaceholder(editor){
+      const text = editor.innerText.trim();
+      if(text === ''){
+        editor.style.color = '#888';
+      } else {
+        editor.style.color = '#ffffff';
+      }
+    }
+    headerEditor.addEventListener('focus', () => {
+      if(headerEditor.innerText.trim() === ''){
+        headerEditor.style.color = '#ffffff';
+      }
+    });
+    headerEditor.addEventListener('blur', () => updatePlaceholder(headerEditor));
+    footerEditor.addEventListener('focus', () => {
+      if(footerEditor.innerText.trim() === ''){
+        footerEditor.style.color = '#ffffff';
+      }
+    });
+    footerEditor.addEventListener('blur', () => updatePlaceholder(footerEditor));
+
     async function fetchClientHeader(clientName){
       if(!clientName) return;
-      const headerEl = document.getElementById('headerInvoice');
-      if(!headerEl) return;
       try{
         const resp = await fetch(`/api/client-headers/${encodeURIComponent(clientName)}`);
         if(resp.ok){
           const data = await resp.json();
           if(data && data.default_header){
-            headerEl.value = data.default_header;
+            headerEditor.innerHTML = data.default_header;
+            headerHidden.value = data.default_header;
+            updatePlaceholder(headerEditor);
           }
         }
-        // If 404 or error, keep existing value (don't clear)
       } catch(_e){
         // Keep existing value on error
       }
     }
     async function fetchClientFooter(clientName){
       if(!clientName) return;
-      const footerEl = document.getElementById('footerInvoice');
-      if(!footerEl) return;
       try{
         const resp = await fetch(`/api/client-footers/${encodeURIComponent(clientName)}`);
         if(resp.ok){
           const data = await resp.json();
           if(data && data.default_footer){
-            footerEl.value = data.default_footer;
+            footerEditor.innerHTML = data.default_footer;
+            footerHidden.value = data.default_footer;
+            updatePlaceholder(footerEditor);
           }
         }
-        // If 404 or error, keep existing value (don't clear)
       } catch(_e){
         // Keep existing value on error
       }

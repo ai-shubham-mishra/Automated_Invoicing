@@ -1410,77 +1410,63 @@ def _enrich_payload_with_bexio(payload_obj: dict | list) -> None:
     def rebuild_html_from_pairs(title: str, pairs: list[dict], product_code: str = None) -> str:
         """
         Rebuild HTML text field from title, pairs, and optional product code.
-        Returns formatted HTML string with Product code prioritized right after title.
+        STRICT ORDERING - fields must appear in this exact order:
+        1. Name of Product (title)
+        2. Product code
+        3. Unit
+        4. Shelf Life
+        5. HS-Code
+        6. Zusatzcode
         """
         parts = []
         
-        # Add title in strong tag
+        # Convert pairs list to dict for easy lookup (case-insensitive)
+        pairs_dict = {}
+        for pair in pairs:
+            key = pair.get('key', '').strip()
+            if key:
+                key_lower = key.lower()
+                pairs_dict[key_lower] = pair
+        
+        # 1. Add title/product name in strong tag
         if title:
             parts.append(f"<strong>{title}</strong>")
         
-        # Add product code RIGHT AFTER title (prioritized)
+        # 2. Add product code (from parameter or pairs)
         if product_code:
             parts.append(f"Product code: {product_code}")
-        
-        # Separate pairs into product_code pairs and others
-        product_code_pairs = []
-        other_pairs = []
-        
-        for pair in pairs:
-            key = pair.get('key', '').strip()
-            if key.lower() == 'product code':
-                product_code_pairs.append(pair)
-            else:
-                other_pairs.append(pair)
-        
-        # Add product code pairs first (if not already added via product_code param)
-        if not product_code:
-            for pair in product_code_pairs:
-                key = pair.get('key', '').strip()
-                value = pair.get('value', '').strip()
-                allow_blank = pair.get('allow_blank', False)
-                
-                if not key:
-                    continue
-                
-                if (value is None or value == '') and not allow_blank:
-                    continue
-                
-                if value is None:
-                    value = ''
-                
-                line = f"{key}: {value}"
-                
-                if pair.get('isStrong'):
-                    parts.append(f"<strong>{line}</strong>")
-                else:
-                    parts.append(line)
-        
-        # Add all other key-value pairs
-        for pair in other_pairs:
-            key = pair.get('key', '').strip()
+        elif 'product code' in pairs_dict:
+            pair = pairs_dict['product code']
             value = pair.get('value', '').strip()
-            allow_blank = pair.get('allow_blank', False)
-            
-            if not key:
-                continue
-            
-            # If value is None or empty, skip it UNLESS allow_blank is True
-            # allow_blank is used for fields like Unit that should show even when blank
-            if (value is None or value == '') and not allow_blank:
-                continue
-            
-            # For blank values that are allowed, use empty string
-            if value is None:
-                value = ''
-            
-            line = f"{key}: {value}"
-            
-            # Wrap in strong if needed
-            if pair.get('isStrong'):
-                parts.append(f"<strong>{line}</strong>")
-            else:
-                parts.append(line)
+            if value:
+                parts.append(f"Product code: {value}")
+        
+        # 3. Add Unit (ALWAYS include, even if blank)
+        unit_pair = pairs_dict.get('unit')
+        if unit_pair:
+            value = unit_pair.get('value', '').strip()
+            parts.append(f"Unit: {value}")
+        
+        # 4. Add Shelf Life (only if present)
+        shelf_life_pair = pairs_dict.get('shelf life') or pairs_dict.get('mhd')
+        if shelf_life_pair:
+            value = shelf_life_pair.get('value', '').strip()
+            if value:
+                parts.append(f"Shelf Life: {value}")
+        
+        # 5. Add HS-Code (only if present)
+        hs_code_pair = pairs_dict.get('hs-code') or pairs_dict.get('hs code')
+        if hs_code_pair:
+            value = hs_code_pair.get('value', '').strip()
+            if value:
+                parts.append(f"HS-Code: {value}")
+        
+        # 6. Add Zusatzcode (only if present)
+        zusatz_pair = pairs_dict.get('zusatzcode')
+        if zusatz_pair:
+            value = zusatz_pair.get('value', '').strip()
+            if value:
+                parts.append(f"Zusatzcode: {value}")
         
         return "<br />".join(parts)
 
@@ -1494,11 +1480,14 @@ def _enrich_payload_with_bexio(payload_obj: dict | list) -> None:
         original_pairs = parse_html_description_to_pairs(text_val)
         preserved_fields = []
         # ONLY preserve these fields from delivery note
-        fields_to_preserve = {'mhd', 'gross weight'}
+        fields_to_preserve = {'mhd', 'shelf life'}
         for pair in original_pairs:
             key_lower = (pair.get('key') or '').lower().strip()
-            # Only keep MHD and Gross Weight from Workflow 1
+            # Only keep MHD/Shelf Life from Workflow 1
             if key_lower in fields_to_preserve:
+                # Normalize MHD to "Shelf Life" for consistent naming
+                if key_lower == 'mhd':
+                    pair['key'] = 'Shelf Life'
                 preserved_fields.append(pair)
         
         # Extract product code from text
@@ -1519,6 +1508,16 @@ def _enrich_payload_with_bexio(payload_obj: dict | list) -> None:
             intern_name = article.get("intern_name")
             intern_desc = article.get("intern_description")
             unit_id = article.get("unit_id")
+            article_id = article.get("id")  # Get the Bexio article ID
+            
+            # Store article_id to link position to Bexio product (required for "product" type)
+            # Also set type to "KbPositionArticle" to tell Bexio this is a product position
+            if article_id is not None:
+                try:
+                    d["article_id"] = int(article_id)
+                    d["type"] = "KbPositionArticle"  # Required: tells Bexio this is a product position
+                except (ValueError, TypeError):
+                    pass
             
             # Store intern_name as separate field for UI to use as title
             if intern_name is not None and isinstance(intern_name, str) and intern_name.strip():
@@ -1605,6 +1604,16 @@ def _enrich_payload_with_bexio(payload_obj: dict | list) -> None:
                         article = article_cache_by_id.get(aid)
 
         if isinstance(article, dict):
+            # Store article_id to link position to Bexio product (required for "product" type)
+            # Also set type to "KbPositionArticle" to tell Bexio this is a product position
+            article_id = article.get("id")
+            if article_id is not None:
+                try:
+                    d["article_id"] = int(article_id)
+                    d["type"] = "KbPositionArticle"  # Required: tells Bexio this is a product position
+                except (ValueError, TypeError):
+                    pass
+            
             if article.get("intern_name") is not None:
                 d["intern_name"] = article.get("intern_name")
             if article.get("intern_description") is not None:
@@ -2863,10 +2872,13 @@ def api_finalize_invoice():
         payload_obj = {}
     
     # Clean payload: Remove intern_code and intern_name from positions (Bexio doesn't support these fields)
+    # IMPORTANT: We keep article_id and type fields as they're required for Bexio to recognize positions as "product" type
     def clean_payload_for_bexio(obj):
-        """Remove intern_code and intern_name from all positions before sending to Bexio."""
+        """Remove intern_code and intern_name from all positions before sending to Bexio.
+        Preserves article_id and type fields which are required for product-linked positions."""
         if isinstance(obj, dict):
-            # Remove intern_code and intern_name from this dict
+            # Remove intern_code and intern_name from this dict (UI-only fields)
+            # Keep article_id and type as they're required by Bexio API for product positions
             obj.pop('intern_code', None)
             obj.pop('intern_name', None)
             # Recursively clean nested dicts

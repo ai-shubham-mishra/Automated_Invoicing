@@ -51,7 +51,11 @@
           </div>
         {% endcall %}
         {% call ui.field(t('client_headers_default_header'), 'default_header') %}
-          <textarea id="default_header" name="default_header" rows="8" placeholder="{{ t('client_headers_placeholder') }}" style="width:100%; resize:vertical; max-height:300px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
+          <div style="margin-bottom:8px;">
+            <button type="button" id="boldBtnHeader" class="btn" style="padding:4px 12px; font-size:0.9em; background:#333; border:1px solid #555;" title="Bold (Ctrl+B)"><strong>B</strong></button>
+          </div>
+          <div id="headerEditor" contenteditable="true" data-placeholder="{{ t('client_headers_placeholder') }}" style="width:100%; min-height:180px; max-height:300px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444; white-space:pre-wrap; word-wrap:break-word;"></div>
+          <textarea id="default_header" name="default_header" style="display:none;"></textarea>
         {% endcall %}
         <div style="display:flex; gap:8px;">
           {{ ui.button(t('client_headers_save'), attrs='id="save_header_btn" type="submit"') }}
@@ -73,7 +77,11 @@
           </div>
         {% endcall %}
         {% call ui.field(t('client_headers_default_footer'), 'default_footer') %}
-          <textarea id="default_footer" name="default_footer" rows="8" placeholder="{{ t('client_footers_placeholder') }}" style="width:100%; resize:vertical; max-height:300px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444;"></textarea>
+          <div style="margin-bottom:8px;">
+            <button type="button" id="boldBtnFooter" class="btn" style="padding:4px 12px; font-size:0.9em; background:#333; border:1px solid #555;" title="Bold (Ctrl+B)"><strong>B</strong></button>
+          </div>
+          <div id="footerEditor" contenteditable="true" data-placeholder="{{ t('client_footers_placeholder') }}" style="width:100%; min-height:180px; max-height:300px; overflow:auto; border-radius:8px; background:#1e1e1e; color:#ffffff; padding:10px; border:1px solid #444; white-space:pre-wrap; word-wrap:break-word;"></div>
+          <textarea id="default_footer" name="default_footer" style="display:none;"></textarea>
         {% endcall %}
         <div style="display:flex; gap:8px;">
           {{ ui.button(t('client_footers_save'), attrs='id="save_footer_btn" type="submit"') }}
@@ -132,19 +140,71 @@
     const comboInputHeader = document.getElementById('combo_input_header');
     const comboListHeader = document.getElementById('combo_list_header');
     const hiddenInputHeader = document.getElementById('client_name_header');
+    const headerEditor = document.getElementById('headerEditor');
     const headerTextarea = document.getElementById('default_header');
     const headerForm = document.getElementById('header_form');
     const saveHeaderBtn = document.getElementById('save_header_btn');
     const clearHeaderBtn = document.getElementById('clear_header_btn');
+    const boldBtnHeader = document.getElementById('boldBtnHeader');
 
     // Footer tab logic
     const comboInputFooter = document.getElementById('combo_input_footer');
     const comboListFooter = document.getElementById('combo_list_footer');
     const hiddenInputFooter = document.getElementById('client_name_footer');
+    const footerEditor = document.getElementById('footerEditor');
     const footerTextarea = document.getElementById('default_footer');
     const footerForm = document.getElementById('footer_form');
     const saveFooterBtn = document.getElementById('save_footer_btn');
     const clearFooterBtn = document.getElementById('clear_footer_btn');
+    const boldBtnFooter = document.getElementById('boldBtnFooter');
+
+    // Rich text editor functionality
+    function syncEditorToHidden(editor, hidden){
+      const html = editor.innerHTML.replace(/<div><br><\/div>/gi, '<br />').replace(/<div>/gi, '').replace(/<\/div>/gi, '<br />');
+      hidden.value = html;
+    }
+
+    headerEditor.addEventListener('input', () => syncEditorToHidden(headerEditor, headerTextarea));
+    footerEditor.addEventListener('input', () => syncEditorToHidden(footerEditor, footerTextarea));
+
+    boldBtnHeader.addEventListener('click', () => {
+      document.execCommand('bold', false, null);
+      headerEditor.focus();
+    });
+    boldBtnFooter.addEventListener('click', () => {
+      document.execCommand('bold', false, null);
+      footerEditor.focus();
+    });
+
+    headerEditor.addEventListener('keydown', (e) => {
+      if((e.ctrlKey || e.metaKey) && e.key === 'b'){
+        e.preventDefault();
+        document.execCommand('bold', false, null);
+      }
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        document.execCommand('insertHTML', false, '<br /><br />');
+      }
+    });
+    footerEditor.addEventListener('keydown', (e) => {
+      if((e.ctrlKey || e.metaKey) && e.key === 'b'){
+        e.preventDefault();
+        document.execCommand('bold', false, null);
+      }
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        document.execCommand('insertHTML', false, '<br /><br />');
+      }
+    });
+
+    function updatePlaceholder(editor){
+      const text = editor.innerText.trim();
+      editor.style.color = text === '' ? '#888' : '#ffffff';
+    }
+    headerEditor.addEventListener('focus', () => { if(headerEditor.innerText.trim() === '') headerEditor.style.color = '#ffffff'; });
+    headerEditor.addEventListener('blur', () => updatePlaceholder(headerEditor));
+    footerEditor.addEventListener('focus', () => { if(footerEditor.innerText.trim() === '') footerEditor.style.color = '#ffffff'; });
+    footerEditor.addEventListener('blur', () => updatePlaceholder(footerEditor));
 
     let items = [];
     let openHeader = false;
@@ -197,15 +257,23 @@
         if(resp.ok){
           const data = await resp.json();
           if(data && data.default_header){
+            headerEditor.innerHTML = data.default_header;
             headerTextarea.value = data.default_header;
+            updatePlaceholder(headerEditor);
           } else {
+            headerEditor.innerHTML = '';
             headerTextarea.value = '';
+            updatePlaceholder(headerEditor);
           }
         } else {
+          headerEditor.innerHTML = '';
           headerTextarea.value = '';
+          updatePlaceholder(headerEditor);
         }
       } catch(_e){
+        headerEditor.innerHTML = '';
         headerTextarea.value = '';
+        updatePlaceholder(headerEditor);
       }
     }
 
@@ -216,15 +284,23 @@
         if(resp.ok){
           const data = await resp.json();
           if(data && data.default_footer){
+            footerEditor.innerHTML = data.default_footer;
             footerTextarea.value = data.default_footer;
+            updatePlaceholder(footerEditor);
           } else {
+            footerEditor.innerHTML = '';
             footerTextarea.value = '';
+            updatePlaceholder(footerEditor);
           }
         } else {
+          footerEditor.innerHTML = '';
           footerTextarea.value = '';
+          updatePlaceholder(footerEditor);
         }
       } catch(_e){
+        footerEditor.innerHTML = '';
         footerTextarea.value = '';
+        updatePlaceholder(footerEditor);
       }
     }
 
@@ -313,13 +389,17 @@
     clearHeaderBtn.addEventListener('click', () => {
       comboInputHeader.value = '';
       hiddenInputHeader.value = '';
+      headerEditor.innerHTML = '';
       headerTextarea.value = '';
+      updatePlaceholder(headerEditor);
     });
 
     clearFooterBtn.addEventListener('click', () => {
       comboInputFooter.value = '';
       hiddenInputFooter.value = '';
+      footerEditor.innerHTML = '';
       footerTextarea.value = '';
+      updatePlaceholder(footerEditor);
     });
 
     headerForm.addEventListener('submit', async (e) => {
@@ -330,7 +410,7 @@
         showNotification('Please select a client.', 'error');
         return;
       }
-      if(!headerText){
+      if(!headerText || headerEditor.innerText.trim() === ''){
         showNotification('Please enter a default header.', 'error');
         return;
       }
@@ -363,7 +443,7 @@
         showNotification('Please select a client.', 'error');
         return;
       }
-      if(!footerText){
+      if(!footerText || footerEditor.innerText.trim() === ''){
         showNotification('Please enter a default footer.', 'error');
         return;
       }
@@ -389,6 +469,7 @@
     });
   </script>
 {% endblock %}
+
 
 
 
